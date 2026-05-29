@@ -1,23 +1,23 @@
 """
-FROM SNOW TO RESERVOIR – Direct Cloud Download → Google Drive
+FROM SNOW TO RESERVOIR - Direct Cloud Download to Google Drive
 Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
 
-Ablauf:
-  1. earthaccess öffnet OPERA DSWx-S1 Granules direkt aus NASA S3 (kein Full-Download)
-  2. rioxarray clippt auf AOI-Bbox → nur relevante Pixel
-  3. Clipped GeoTIFF wird direkt auf Google Drive hochgeladen
+Pipeline:
+  1. earthaccess searches OPERA granules directly from NASA
+  2. rioxarray clips to AOI bbox (no full download)
+  3. Coverage filter: skip files with < MIN_COVERAGE_PCT valid pixels
+  4. Clipped GeoTIFF uploaded directly to Google Drive
 
-Voraussetzungen:
+Collections:
+  - OPERA_L3_DSWX-S1_V1  : B01_WTR  (water classification, SAR-based)
+  - OPERA_L3_DSWX-HLS_V1 : B03_SNOW (snow/ice classification, optical)
+
+Requirements:
     pip install earthaccess rioxarray rasterio pydrive2 tqdm python-dotenv
-
-Google Drive Setup (einmalig):
-    → Siehe setup_google_drive.md
 """
 
 import io
-import os
 import re
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -32,16 +32,14 @@ from tqdm import tqdm
 load_dotenv()
 
 # ─────────────────────────────────────────────
-# KONFIGURATION
+# CONFIGURATION
 # ─────────────────────────────────────────────
 
 AOI_1 = {
     "name": "enguri",
     "label": "Enguri Talsperre + Svaneti",
-    # (West, Süd, Ost, Nord) für earthaccess search
-    "bbox": (41.70, 42.55, 42.70, 43.05),
-    # (min_lon, min_lat, max_lon, max_lat) für rioxarray clip
-    "clip_box": (41.70, 42.55, 42.70, 43.05),
+    "bbox": (41.70, 42.55, 42.70, 43.05),       # (W, S, E, N) for earthaccess
+    "clip_box": (41.70, 42.55, 42.70, 43.05),   # (min_lon, min_lat, max_lon, max_lat)
 }
 
 AOI_2 = {
@@ -54,43 +52,42 @@ AOI_2 = {
 DATE_START = "2024-08-01"
 DATE_END   = datetime.today().strftime("%Y-%m-%d")
 
-COLLECTION  = "OPERA_L3_DSWX-S1_V1"
+NODATA = 255
+MIN_COVERAGE_PCT = 90.0  # skip files with less than this % of valid pixels
 
-# Welche DSWx-S1 Layer herunterladen?
-# B01_WTR  = Water Classification (Open Water, Partial, etc.)
-# B03_SNOW = Snow/Ice Classification  ← wichtigster Layer für uns
-# B01_WTR enthält alle Klassen inkl. Snow/Ice (Wert 252) und Open Water (Wert 1)
-# B03_CONF optional für Qualitätsfilterung
-LAYERS_TO_KEEP = ["B01_WTR", "B03_CONF"]
-
-# Google Drive Ordner-Name (wird angelegt falls nicht vorhanden)
-DRIVE_ROOT_FOLDER = "opera_dswx_s1"
+# Collections and their layers to download
+COLLECTIONS = [
+    {
+        "short_name":   "OPERA_L3_DSWX-S1_V1",
+        "layers":       ["B01_WTR"],
+        "drive_folder": "opera_dswx_s1",
+    },
+    {
+        "short_name":   "OPERA_L3_DSWX-HLS_V1",
+        "layers":       ["B03_SNOW"],
+        "drive_folder": "opera_dswx_hls",
+    },
+]
 
 
 # ─────────────────────────────────────────────
-# GOOGLE DRIVE AUTH
+# GOOGLE DRIVE
 # ─────────────────────────────────────────────
 
 def get_drive() -> GoogleDrive:
-    """Authentifiziert mit Google Drive. Beim ersten Mal öffnet sich ein Browser-Fenster."""
     gauth = GoogleAuth()
-    # Saved credentials laden (nach erstem Login automatisch)
     gauth.LoadCredentialsFile("gdrive_credentials.json")
-
     if gauth.credentials is None:
-        # Erster Start: Browser-Auth
         gauth.LocalWebserverAuth()
     elif gauth.access_token_expired:
         gauth.Refresh()
     else:
         gauth.Authorize()
-
     gauth.SaveCredentialsFile("gdrive_credentials.json")
     return GoogleDrive(gauth)
 
 
 def get_or_create_folder(drive: GoogleDrive, name: str, parent_id: str = "root") -> str:
-    """Gibt Folder-ID zurück, legt Ordner an falls er nicht existiert."""
     query = (
         f"title='{name}' and mimeType='application/vnd.google-apps.folder' "
         f"and '{parent_id}' in parents and trashed=false"
@@ -98,7 +95,6 @@ def get_or_create_folder(drive: GoogleDrive, name: str, parent_id: str = "root")
     results = drive.ListFile({"q": query}).GetList()
     if results:
         return results[0]["id"]
-
     folder = drive.CreateFile({
         "title": name,
         "mimeType": "application/vnd.google-apps.folder",
@@ -109,23 +105,15 @@ def get_or_create_folder(drive: GoogleDrive, name: str, parent_id: str = "root")
 
 
 def file_exists_in_drive(drive: GoogleDrive, filename: str, folder_id: str) -> bool:
-    """Prüft ob Datei bereits in Drive existiert (Skip-Logik)."""
     query = f"title='{filename}' and '{folder_id}' in parents and trashed=false"
     return len(drive.ListFile({"q": query}).GetList()) > 0
 
 
-def upload_bytes_to_drive(
-    drive: GoogleDrive,
-    data: bytes,
-    filename: str,
-    folder_id: str,
-    mime: str = "image/tiff",
-) -> str:
-    """Lädt Bytes-Objekt als Datei in Google Drive hoch. Gibt File-ID zurück."""
+def upload_bytes_to_drive(drive: GoogleDrive, data: bytes, filename: str, folder_id: str) -> str:
     f = drive.CreateFile({
         "title": filename,
         "parents": [{"id": folder_id}],
-        "mimeType": mime,
+        "mimeType": "image/tiff",
     })
     f.content = io.BytesIO(data)
     f.Upload()
@@ -133,34 +121,36 @@ def upload_bytes_to_drive(
 
 
 # ─────────────────────────────────────────────
-# DATEN-VERARBEITUNG
+# DATA PROCESSING
 # ─────────────────────────────────────────────
 
 def extract_date_from_filename(filename: str) -> str:
-    """Extrahiert YYYYMMDD aus OPERA Dateinamen."""
     m = re.search(r"_(\d{8})T", filename)
     return m.group(1) if m else "unknown"
 
 
-def extract_layer_from_filename(filename: str) -> str:
-    """Extrahiert Layer-Kürzel z.B. 'B01_WTR' aus Dateinamen."""
-    for layer in ["B01_WTR", "B02_BWTR", "B03_SNOW", "B04_INUN", "B05_CONF", "B09_Q"]:
+def extract_layer_from_filename(filename: str, layers: list[str]) -> str | None:
+    for layer in layers:
         if layer in filename:
             return layer
-    return "UNKNOWN"
+    return None
+
+
+def compute_coverage(data: bytes) -> float:
+    """Return fraction of valid (non-NoData) pixels as percentage."""
+    buf = io.BytesIO(data)
+    import rasterio
+    with rasterio.open(buf) as src:
+        arr = src.read(1)
+    valid = int(np.sum(arr != NODATA))
+    return valid / arr.size * 100.0
 
 
 def process_granule(fs, url: str, clip_box: tuple) -> bytes | None:
-    """
-    Öffnet einen GeoTIFF direkt aus S3 via fsspec,
-    clippt auf clip_box (min_lon, min_lat, max_lon, max_lat),
-    gibt geclippte Bytes zurück oder None bei Fehler.
-    """
     try:
         with fs.open(url) as f:
             da = rxr.open_rasterio(f, masked=True)
 
-        # Clip auf AOI
         clipped = da.rio.clip_box(
             minx=clip_box[0],
             miny=clip_box[1],
@@ -172,7 +162,6 @@ def process_granule(fs, url: str, clip_box: tuple) -> bytes | None:
         if clipped.size == 0:
             return None
 
-        # In-Memory als GeoTIFF exportieren
         buf = io.BytesIO()
         clipped.rio.to_raster(buf, driver="GTiff", compress="deflate")
         return buf.getvalue()
@@ -183,100 +172,95 @@ def process_granule(fs, url: str, clip_box: tuple) -> bytes | None:
 
 
 # ─────────────────────────────────────────────
-# HAUPT-PIPELINE
+# MAIN PIPELINE
 # ─────────────────────────────────────────────
 
-def process_aoi(aoi: dict, drive: GoogleDrive, root_folder_id: str):
-    """Komplett-Pipeline für ein AOI: Suche → Clip → Drive Upload."""
+def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
+    root_id = get_or_create_folder(drive, collection["drive_folder"])
+    aoi_folder_id = get_or_create_folder(drive, aoi["name"], root_id)
 
-    print(f"\n{'='*60}")
-    print(f"AOI: {aoi['label']}")
-    print(f"{'='*60}")
-
-    # Drive-Ordner anlegen: opera_dswx_s1 / enguri /
-    aoi_folder_id = get_or_create_folder(drive, aoi["name"], root_folder_id)
-
-    # 1. Granules suchen
-    print(f"Suche Granules {DATE_START} -> {DATE_END}...")
+    print(f"\n  Searching {collection['short_name']} {DATE_START} -> {DATE_END}...")
     granules = earthaccess.search_data(
-        short_name=COLLECTION,
+        short_name=collection["short_name"],
         bounding_box=aoi["bbox"],
         temporal=(DATE_START, DATE_END),
         count=-1,
     )
-    print(f"   → {len(granules)} Granules gefunden")
+    print(f"  -> {len(granules)} granules found")
 
     if not granules:
-        print("   Keine Daten verfügbar.")
         return
 
-    # 2. Direct S3 Filesystem öffnen
-    fs = earthaccess.get_fsspec_https_session()  # funktioniert ohne AWS-Account
+    fs = earthaccess.get_fsspec_https_session()
 
-    # Alle Asset-URLs der gewünschten Layer sammeln
     urls_to_process = []
     for granule in granules:
         for link in granule.data_links():
             fname = Path(link).name
-            layer = extract_layer_from_filename(fname)
-            if layer in LAYERS_TO_KEEP:
+            layer = extract_layer_from_filename(fname, collection["layers"])
+            if layer:
                 urls_to_process.append((link, fname, layer))
 
-    print(f"   → {len(urls_to_process)} Layer-Files zu verarbeiten ({', '.join(LAYERS_TO_KEEP)})")
+    print(f"  -> {len(urls_to_process)} files to process ({', '.join(collection['layers'])})")
 
-    # 3. Verarbeiten + hochladen
     uploaded = 0
-    skipped  = 0
+    skipped_existing = 0
+    skipped_coverage = 0
 
     for url, fname, layer in tqdm(urls_to_process, desc=f"  {aoi['name']}"):
-        date_str  = extract_date_from_filename(fname)
-        out_name  = f"{aoi['name']}_{date_str}_{layer}_clipped.tif"
+        date_str = extract_date_from_filename(fname)
+        out_name = f"{aoi['name']}_{date_str}_{layer}_clipped.tif"
 
-        # Skip wenn schon in Drive
         if file_exists_in_drive(drive, out_name, aoi_folder_id):
-            skipped += 1
+            skipped_existing += 1
             continue
 
-        # Clip
         data = process_granule(fs, url, aoi["clip_box"])
         if data is None:
             continue
 
-        # Upload
+        coverage = compute_coverage(data)
+        if coverage < MIN_COVERAGE_PCT:
+            skipped_coverage += 1
+            continue
+
         upload_bytes_to_drive(drive, data, out_name, aoi_folder_id)
         uploaded += 1
 
-    print(f"\n{aoi['name']}: {uploaded} hochgeladen, {skipped} uebersprungen (bereits in Drive)")
+    print(f"  {aoi['name']}: {uploaded} uploaded, "
+          f"{skipped_existing} already in Drive, "
+          f"{skipped_coverage} skipped (coverage < {MIN_COVERAGE_PCT}%)")
 
 
 def main():
     print("=" * 60)
-    print("FROM SNOW TO RESERVOIR – Download → Google Drive")
-    print(f"Zeitraum: {DATE_START} → {DATE_END}")
-    print(f"Layer: {', '.join(LAYERS_TO_KEEP)}")
+    print("FROM SNOW TO RESERVOIR - Download to Google Drive")
+    print(f"Period  : {DATE_START} -> {DATE_END}")
+    print(f"Filter  : >= {MIN_COVERAGE_PCT}% valid pixels")
+    print(f"Products: {', '.join(c['short_name'] for c in COLLECTIONS)}")
     print("=" * 60)
 
-    # NASA Login
     print("\nNASA Earthdata Login...")
     try:
         earthaccess.login(strategy="netrc")
     except Exception:
-        print("   Kein _netrc gefunden - bitte Username/Passwort eingeben:")
+        print("  No _netrc found - enter credentials:")
         earthaccess.login(strategy="interactive", persist=True)
     print("NASA Login OK")
 
     print("\nGoogle Drive Login...")
     drive = get_drive()
-    print("Google Drive OK")
+    print("Google Drive OK\n")
 
-    root_id = get_or_create_folder(drive, DRIVE_ROOT_FOLDER)
-    print(f"Drive-Ordner: {DRIVE_ROOT_FOLDER} (ID: {root_id})")
+    for collection in COLLECTIONS:
+        print(f"\n{'='*60}")
+        print(f"Collection: {collection['short_name']}")
+        print(f"{'='*60}")
+        for aoi in [AOI_1, AOI_2]:
+            print(f"\nAOI: {aoi['label']}")
+            process_aoi(aoi, collection, drive)
 
-    # AOIs verarbeiten
-    process_aoi(AOI_1, drive, root_id)
-    process_aoi(AOI_2, drive, root_id)
-
-    print("\nFertig. Daten liegen in Google Drive unter:", DRIVE_ROOT_FOLDER)
+    print("\nDone. Data available in Google Drive.")
 
 
 if __name__ == "__main__":

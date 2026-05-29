@@ -17,8 +17,9 @@ __pycache__/
 venv/
 env/
 
-# Data (zu groß für GitHub)
+# Data / Output (zu groß für GitHub)
 data/
+*.csv
 
 # Jupyter
 .ipynb_checkpoints/
