@@ -18,9 +18,8 @@ Georgiens Stromversorgung haengt zu etwa 80 % von der Wasserkraft ab. Saisonale 
 
 ## Daten
 
-- **OPERA DSWx-S1 (Level-3):** Water Extent + Snow/Ice Klassifikation via NASA earthaccess, ~6-Tage Revisit
-- **OPERA RTC-S1:** Radiometric Terrain Corrected Sentinel-1, Wet Snow Detection
-- **Sentinel-2 NDWI** (Copernicus WMS): optische Validierung
+- **OPERA DSWx-S1 (Level-3):** Wasserklassifikation (B01_WTR) via NASA earthaccess, ~6-Tage Revisit
+- **OPERA DSWx-HLS (Level-3):** Schnee/Eis Klassifikation (B03_SNOW) aus Landsat-8/Sentinel-2
 - **Copernicus DEM GLO-30:** 30 m Hoehenmodell, hypsometrische Volumenberechnung
 - **Randolph Glacier Inventory v7 (RGI):** Gletscher-Polygone, Volume-Area Scaling
 
@@ -32,14 +31,16 @@ Zeitraum: August 2024 bis heute (live, automatisch aktualisiert)
 NASA Earthdata (earthaccess)
         |
         v
-download_to_drive.py        # Granules suchen, auf AOI clippen, nach Google Drive hochladen
-        |
+download_to_drive.py        # Clip auf AOI, Coverage-Filter >= 90%, Upload nach Google Drive
+        |                   # DSWx-S1 B01_WTR (Wasser) + DSWx-HLS B03_SNOW (Schnee/Eis)
         v
-filter_tiffs_by_coverage.py # Dateien mit < 50% valider Pixel entfernen
+extract_timeseries.py       # Flaechenberechnung pro Klasse -> CSV Zeitreihen
         |
         v
 Streamlit App               # Zeitreihen, Karte, AI-Report (in Entwicklung)
 ```
+
+`filter_tiffs_by_coverage.py` steht zusaetzlich fuer manuelle Nachbereinigung bestehender Drive-Ordner zur Verfuegung.
 
 ## Setup
 
@@ -50,7 +51,7 @@ pip install -r requirements.txt
 ```
 
 Google Drive Authentifizierung (einmalig):
-- `client_secrets.json` und `settings.yaml` benoetigt (nicht im Repo — siehe Google Drive API Setup)
+- `client_secrets.json` und `settings.yaml` benoetigt (nicht im Repo — siehe Google Drive API Dokumentation)
 
 NASA Earthdata Login:
 - Konto unter [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov) anlegen
@@ -59,33 +60,34 @@ NASA Earthdata Login:
 ## Skripte
 
 ### `download_to_drive.py`
-Laedt OPERA DSWx-S1 Granules direkt aus NASA S3, clippt auf die AOI-Bboxen und laedt die geclippten GeoTIFFs nach Google Drive hoch. Bereits vorhandene Dateien werden uebersprungen (Skip-Logik).
+Laedt OPERA DSWx-S1 (B01_WTR) und DSWx-HLS (B03_SNOW) Granules direkt aus NASA, clippt auf AOI-Bboxen und laedt nach Google Drive hoch. Eingebauter Coverage-Filter (>= 90% valide Pixel) verwirft MGRS-Randkacheln direkt beim Download.
 
 ```bash
 python download_to_drive.py
 ```
 
-### `filter_tiffs_by_coverage.py`
-Berechnet den Anteil valider Pixel (NoData = 255) pro Datei und loescht Dateien unterhalb eines Schwellenwerts aus Google Drive.
+### `extract_timeseries.py`
+Liest alle GeoTIFFs aus Google Drive in-memory, berechnet Flaechenanteile pro Pixelklasse (Open Water, Inundated Vegetation, etc.) und speichert Zeitreihen als CSV.
 
 ```bash
-python filter_tiffs_by_coverage.py --threshold 50 --folder-id <FOLDER_ID>
-# Dry-Run (keine Loeschung):
-python filter_tiffs_by_coverage.py --threshold 50 --folder-id <FOLDER_ID> --dry-run
+python extract_timeseries.py
 ```
 
-### `list_dates.py`
-Listet alle verfuegbaren Aufnahmedaten pro Site aus Google Drive.
+### `filter_tiffs_by_coverage.py`
+Nachtraeglicher Coverage-Filter fuer bestehende Drive-Ordner. Berechnet Anteil valider Pixel und loescht Dateien unterhalb des Schwellenwerts.
 
 ```bash
-python list_dates.py
+python filter_tiffs_by_coverage.py --threshold 90 --folder-id <FOLDER_ID>
+# Dry-Run (keine Loeschung):
+python filter_tiffs_by_coverage.py --threshold 90 --folder-id <FOLDER_ID> --dry-run
 ```
 
 ## Aktueller Datenstand
 
-- **Enguri:** 110 Aufnahmen (Aug 2024 – Mai 2026), ~6-Tage Revisit
-- **Zhinvali:** 101 Aufnahmen (Aug 2024 – Mai 2026), ~6-Tage Revisit
-- Coverage-Filter: >= 50% valide Pixel (entfernt MGRS-Randkacheln)
+- **Enguri (DSWx-S1):** 104 Aufnahmen (Aug 2024 – Mai 2026), ~6-Tage Revisit, >= 99% Coverage
+- **Zhinvali (DSWx-S1):** 99 Aufnahmen (Aug 2024 – Mai 2026), ~6-Tage Revisit, >= 99% Coverage
+- **DSWx-HLS B03_SNOW:** Download laufend
+- Coverage-Filter: >= 90% valide Pixel
 
 ## Tech Stack
 
