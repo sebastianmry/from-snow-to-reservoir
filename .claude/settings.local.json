@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:d2pn8kiwq2w21t.cloudfront.net)",
+      "WebFetch(domain:developers.google.com)"
+    ]
+  }
+}
