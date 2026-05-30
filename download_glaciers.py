@@ -32,7 +32,7 @@ RGI_URL_CANDIDATES = [
     RGI_NSIDC_BASE + RGI_FILENAME,
 ]
 RGI_ZIP      = STATIC_DIR / "rgi_region12.zip"
-RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
+RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
 
 
 # ─────────────────────────────────────────────

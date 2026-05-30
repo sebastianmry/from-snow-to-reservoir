@@ -71,7 +71,7 @@ STATIC_DIR = Path("static_data")
 OUTPUT_DIR = Path(".")
 SITES      = ["enguri", "zhinvali"]
 
-RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
+RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
 
 
 # ─────────────────────────────────────────────
