@@ -64,7 +64,8 @@ NODATA         = 255
 WATER_VALUES   = {1, 2, 3, 4, 5}
 SNOW_VALUE     = 252
 CLOUD_VALUES   = {3, 4}
-MAX_CLOUD_PCT  = 50.0
+MAX_CLOUD_PCT  = 30.0
+MIN_VALID_PCT  = 80.0  # skip scenes where less than 80% of AOI pixels are valid (not NoData)
 
 STATIC_DIR = Path("static_data")
 OUTPUT_DIR = Path(".")
@@ -259,7 +260,11 @@ def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
         cloud = np.isin(cloud_arr, list(CLOUD_VALUES))
 
     n_valid = int(np.sum(valid))
+    valid_pct = float(n_valid) / wtr.size * 100
     cloud_pct = float(np.sum(cloud & valid)) / max(n_valid, 1) * 100
+
+    if valid_pct < MIN_VALID_PCT:
+        return None
 
     if cloud_pct > MAX_CLOUD_PCT:
         return None
@@ -277,12 +282,12 @@ def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
     bare_ice_km2      = max(0.0, glacier_total_km2 - float(np.sum(snow_on_glacier) * px))
 
     return {
-        "water_km2":           float(np.sum(water_mask) * px),
-        "snow_seasonal_km2":   float(np.sum(snow_seasonal) * px),
+        "water_area_km2":      float(np.sum(water_mask) * px),
+        "seasonal_snow_km2":   float(np.sum(snow_seasonal) * px),
         "snow_on_glacier_km2": float(np.sum(snow_on_glacier) * px),
         "bare_ice_km2":        bare_ice_km2,
         "glacier_total_km2":   glacier_total_km2,
-        "cloud_pct":           round(cloud_pct, 2),
+        "cloud_cover_percent": round(cloud_pct, 2),
         "valid_px_pct":        round(float(n_valid) / wtr.size * 100, 2),
     }
 
@@ -337,7 +342,7 @@ def main():
 
     # ── DSWx-S1 ──────────────────────────────
     print("\n--- DSWx-S1 B01_WTR ---")
-    s1_root = get_folder_id(drive, "s1", DRIVE_ROOT_FOLDER_ID)
+    s1_root = get_folder_id(drive, "s1", "root")
 
     for aoi in [AOI_1, AOI_2]:
         site = aoi["name"]
@@ -376,7 +381,7 @@ def main():
 
     # ── DSWx-HLS ─────────────────────────────
     print("\n--- DSWx-HLS B01_WTR + B09_CLOUD ---")
-    hls_root = get_folder_id(drive, "hls", DRIVE_ROOT_FOLDER_ID)
+    hls_root = get_folder_id(drive, "hls", "root")
 
     if not hls_root:
         print("  HLS folder not found - run download_to_drive.py first")
@@ -417,23 +422,23 @@ def main():
                 cloud_data = read_bytes(cloud_file) if cloud_file else None
                 stats = extract_hls_stats(wtr_data, cloud_data, glaciers)
                 if stats is None:
-                    print(f"skipped (cloud > {MAX_CLOUD_PCT}%)")
+                    print(f"skipped (coverage < {MIN_VALID_PCT}% or cloud > {MAX_CLOUD_PCT}%)")
                     continue
                 rows.append({"date": datetime.strptime(date_str, "%Y%m%d").date(), **stats})
-                print(f"water={stats['water_km2']:.2f}  "
-                      f"snow_seas={stats['snow_seasonal_km2']:.1f}  "
+                print(f"water={stats['water_area_km2']:.2f}  "
+                      f"snow_seas={stats['seasonal_snow_km2']:.1f}  "
                       f"snow_glac={stats['snow_on_glacier_km2']:.1f}  "
                       f"bare_ice={stats['bare_ice_km2']:.1f}  "
-                      f"cloud={stats['cloud_pct']:.0f}%")
+                      f"cloud={stats['cloud_cover_percent']:.0f}%")
             except Exception as e:
                 print(f"ERROR: {e}")
 
         if rows:
             save_outputs(
                 rows,
-                ["date", "water_km2", "snow_seasonal_km2", "snow_on_glacier_km2",
-                 "bare_ice_km2", "glacier_total_km2", "cloud_pct", "valid_px_pct"],
-                f"{site}_hls_timeseries",
+                ["date", "water_area_km2", "seasonal_snow_km2", "snow_on_glacier_km2",
+                 "bare_ice_km2", "glacier_total_km2", "cloud_cover_percent", "valid_px_pct"],
+                f"{site}_timeseries",
             )
 
 

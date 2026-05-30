@@ -67,15 +67,16 @@ DATE_START = "2024-08-01"
 DATE_END   = datetime.today().strftime("%Y-%m-%d")
 
 NODATA      = 255
-MAX_WORKERS = 4
+MAX_WORKERS = 2  # reduced from 4 to prevent RAM overload on HLS mosaics
 MAX_RETRIES = 3
 
 COLLECTIONS = [
-    {
-        "short_name":    "OPERA_L3_DSWX-S1_V1",
-        "layers":        ["B01_WTR"],
-        "drive_subfolder": "s1",
-    },
+    # "OPERA_L3_DSWX-S1_V1" temporarily disabled - resume HLS-only after crash
+    # {
+    #     "short_name":    "OPERA_L3_DSWX-S1_V1",
+    #     "layers":        ["B01_WTR"],
+    #     "drive_subfolder": "s1",
+    # },
     {
         "short_name":    "OPERA_L3_DSWX-HLS_V1",
         "layers":        ["B01_WTR", "B09_CLOUD"],
@@ -208,8 +209,8 @@ def download_and_clip(fs, url: str, clip_box: tuple) -> bytes | None:
 # ─────────────────────────────────────────────
 
 def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
-    # Drive folder: DRIVE_ROOT / s1|hls / enguri|zhinvali
-    sub_id  = get_or_create_folder(drive, collection["drive_subfolder"], DRIVE_ROOT_FOLDER_ID)
+    # Drive folder: s1|hls (at root) / enguri|zhinvali
+    sub_id  = get_or_create_folder(drive, collection["drive_subfolder"], "root")
     aoi_id  = get_or_create_folder(drive, aoi["name"], sub_id)
 
     print(f"  Fetching existing files from Drive...")
