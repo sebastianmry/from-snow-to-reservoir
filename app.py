@@ -190,14 +190,18 @@ def load_glaciers(clip_box: tuple) -> gpd.GeoDataFrame | None:
 # ─────────────────────────────────────────────
 
 def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None) -> folium.Map:
+    min_lon, min_lat, max_lon, max_lat = aoi["clip_box"]
+    center_lat = (min_lat + max_lat) / 2
+    center_lon = (min_lon + max_lon) / 2
+
     m = folium.Map(
-        location=[aoi["center"][1], aoi["center"][0]],
-        zoom_start=aoi["zoom"],
+        location=[center_lat, center_lon],
         tiles="CartoDB positron",
     )
+    # Fit exactly to the AOI so it is always centered regardless of AOI size
+    m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
     # AOI bounding box
-    min_lon, min_lat, max_lon, max_lat = aoi["clip_box"]
     folium.Rectangle(
         bounds=[[min_lat, min_lon], [max_lat, max_lon]],
         color="#e67e22",
