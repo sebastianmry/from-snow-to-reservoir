@@ -67,7 +67,7 @@ WATER_VALUES   = {1, 2, 3, 4, 5}
 SNOW_VALUE     = 252
 CLOUD_VALUES   = {3, 4}
 MAX_CLOUD_PCT  = 30.0
-MIN_VALID_PCT  = 99.0  # skip scenes where less than 99% of AOI pixels are valid (not NoData)
+MIN_VALID_PCT  = 95.0  # skip scenes where less than 95% of AOI pixels are valid (not NoData)
 
 STATIC_DIR = Path("static_data")
 OUTPUT_DIR = Path(".")
