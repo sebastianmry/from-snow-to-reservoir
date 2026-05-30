@@ -75,9 +75,13 @@ Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Geor
 - GitHub Secrets fuer NASA + Google Drive credentials.
 - Streamlit Cloud verbunden mit Repo, oeffentliche URL fuer die Doku.
 
+### Mosaik-Refactor (umgesetzt)
+- **Problem:** Bei Zhinvali liegen Stausee (Lat 42.13, Sued) und Gletscher (Lat 42.52+, Nord) in verschiedenen MGRS-Kacheln. Der alte `reservoir_is_covered`-Filter lud nur Sued-Kacheln -> Gletscherwerte komplett 0. Enguri war ok (Stausee+Gletscher in denselben Kacheln).
+- **Loesung:** `download_to_drive.py` taggt Dateinamen mit MGRS-Kachel-ID und laedt ALLE AOI-Kacheln (kein reservoir-Filter). `extract_timeseries.py` merged pro Datum alle Kacheln zu einem EPSG:4326-Mosaik (volle AOI), berechnet Statistiken darauf. Loest auch das Wasser-Rauschen.
+- **Achtung:** Dateinamen-Aenderung erfordert vollstaendigen Re-Download. Alte HLS-Dateien (ohne MGRS) ggf. vorher im Drive loeschen.
+
 ### Bekannte Eigenheiten
 - **Drive-Ordnerstruktur:** `download_to_drive.py` legt `hls/` und `s1/` direkt im Drive-Root an (nicht unter `DRIVE_ROOT_FOLDER_ID`). `extract_timeseries.py` sucht ebenfalls unter `"root"`. Konsistent - nicht aendern.
-- **MGRS-Kachel-Kollisionen:** Mehrere Dateien pro Datum mit gleichem Output-Namen -> verrauschte Zeitreihen. TODO: Dedup-Filter (beste Kachel pro Datum nach `valid_px_pct`).
 - **Drive-Pagination:** `get_existing_filenames` nutzt `maxResults=1000` gegen das 100-Datei-Limit der API.
 
 ---
