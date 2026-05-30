@@ -72,9 +72,13 @@ STATIC_DIR = Path("static_data")
 OUTPUT_DIR = Path(".")
 SITES      = ["enguri", "zhinvali"]
 
-# RGI v7 Region 12 (Caucasus and Middle East) - NSIDC-0770 via earthaccess
-RGI_SHORT_NAME = "NSIDC-0770"
-RGI_VERSION    = "7"
+# RGI v7 Region 12 (Caucasus and Middle East) - direct NSIDC HTTPS download
+# URL requires NASA Earthdata authentication (same account as earthaccess)
+RGI_NSIDC_URL = (
+    "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/"
+    "regional_files/RGI2000-v7.0-G/"
+    "RGI2000-v7.0-G-12_caucasus-middle_east.zip"
+)
 RGI_FILENAME   = "RGI2000-v7.0-G-12_caucasus-middle_east.zip"
 RGI_ZIP        = STATIC_DIR / "rgi_region12.zip"
 RGI_SHP_GLOB   = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
@@ -85,8 +89,8 @@ RGI_SHP_GLOB   = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
 # ─────────────────────────────────────────────
 
 def ensure_rgi() -> Path | None:
-    """Download and unpack RGI v7 Region 12 via earthaccess (NSIDC-0770) if not present.
-    Uses the existing NASA Earthdata login so no separate credentials are needed.
+    """Download and unpack RGI v7 Region 12 from NSIDC via authenticated HTTPS.
+    Uses the existing NASA Earthdata login (same credentials as download_to_drive.py).
     """
     STATIC_DIR.mkdir(exist_ok=True)
 
@@ -95,44 +99,20 @@ def ensure_rgi() -> Path | None:
         print(f"  RGI shapefile found: {existing[0]}")
         return existing[0]
 
-    print(f"  RGI shapefile not found. Searching NSIDC via earthaccess...")
+    print(f"  RGI shapefile not found. Downloading from NSIDC...")
+    print(f"  URL: {RGI_NSIDC_URL}")
+
     try:
-        results = earthaccess.search_data(
-            short_name=RGI_SHORT_NAME,
-            version=RGI_VERSION,
-            count=200,
-        )
-    except Exception as e:
-        print(f"  ERROR searching NSIDC-0770: {e}")
-        return None
-
-    if not results:
-        print("  ERROR: No results found for NSIDC-0770 v7.")
-        return None
-
-    # Find the Region 12 granule by filename
-    target_url = None
-    for granule in results:
-        for link in granule.data_links():
-            if RGI_FILENAME in link:
-                target_url = link
-                break
-        if target_url:
-            break
-
-    if not target_url:
-        print(f"  ERROR: Could not find {RGI_FILENAME} in NSIDC-0770 granules.")
-        print(f"  Found {len(results)} granules - check dataset version.")
-        return None
-
-    print(f"  Downloading {RGI_FILENAME}...")
-    try:
+        # earthaccess.get_fsspec_https_session() provides an authenticated
+        # session that handles NASA Earthdata OAuth redirects automatically
         fs = earthaccess.get_fsspec_https_session()
-        with fs.open(target_url) as f:
+        total = 0
+        with fs.open(RGI_NSIDC_URL) as f:
             data = f.read()
+            total = len(data)
         with open(RGI_ZIP, "wb") as out:
             out.write(data)
-        print(f"  Download complete ({len(data) / 1e6:.1f} MB)")
+        print(f"  Download complete ({total / 1e6:.1f} MB)")
     except Exception as e:
         print(f"  ERROR downloading RGI: {e}")
         return None
