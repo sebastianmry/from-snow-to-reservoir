@@ -71,6 +71,11 @@ Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Geor
 - Als Folium `ImageOverlay` auf die Karte legen; Datums-Auswahl steuert das gezeigte Raster.
 - Zu loesen: UTM->Lat/Lon Reprojektion, Caching pro Datum (Drive-Load langsam), evtl. vorgerenderte PNG-Overlays fuer fluessiges Durchblaettern.
 
+### GEPLANT: Reservoir-Wasserflaeche + Wasserpegel
+- `download_reservoirs.py` liefert exakte Stausee-Polygone (HydroLAKES) -> `static_data/reservoirs.geojson` (fertig).
+- Naechster Code-Schritt: `extract_timeseries.py` um `reservoir_area_km2` erweitern = Wasserpixel (1-5) nur **innerhalb** des Stausee-Polygons, getrennt von der gesamten AOI-Wasserflaeche (die auch Fluesse enthaelt).
+- Danach Wasserpegel: Flaeche -> Pegel ueber hypsometrische Kurve aus DEM (Copernicus DEM GLO-30); SAR (DSWx-S1) reaktivieren fuer wolkenunabhaengige Wasserausdehnung -> durchgehende Pegelzeitreihe (urspruengliche Projektidee).
+
 ### GEPLANT (Stufe 4): Auto-Updates / Deployment - OPTION A
 - GitHub Action taeglich: `download_to_drive.py` + `extract_timeseries.py`, Parquets auto-committen.
 - GitHub Secrets fuer NASA + Google Drive credentials.
