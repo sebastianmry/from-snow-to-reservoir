@@ -221,18 +221,18 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             tooltip=folium.GeoJsonTooltip(fields=["glac_name"] if "glac_name" in glaciers.columns else []),
         ).add_to(m)
 
-    # River lines
+    # River lines - GeoJson handles both LineString and MultiLineString,
+    # and works for HydroRIVERS data as well as the simplified fallback
     if rivers:
-        for river in rivers:
-            name = river["properties"]["name"]
-            coords = river["geometry"]["coordinates"]
-            folium.PolyLine(
-                locations=[[c[1], c[0]] for c in coords],
-                color="#2980b9",
-                weight=2.5,
-                opacity=0.8,
-                tooltip=name,
-            ).add_to(m)
+        folium.GeoJson(
+            {"type": "FeatureCollection", "features": rivers},
+            name="Fluesse (HydroRIVERS)",
+            style_function=lambda _: {
+                "color": "#2980b9",
+                "weight": 2,
+                "opacity": 0.8,
+            },
+        ).add_to(m)
 
     # Dam marker
     dam_lon, dam_lat = aoi["dam"]
