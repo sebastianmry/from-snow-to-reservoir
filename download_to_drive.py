@@ -120,11 +120,17 @@ def get_or_create_folder(drive: GoogleDrive, name: str, parent_id: str) -> str:
 
 
 def get_existing_filenames(drive: GoogleDrive, folder_id: str) -> set[str]:
-    """Fetch all filenames in one API call."""
-    files = drive.ListFile(
-        {"q": f"'{folder_id}' in parents and trashed=false"}
-    ).GetList()
-    return {f["title"] for f in files}
+    """Fetch all filenames with pagination (Drive API returns max 100 per page).
+    pydrive2 supports iterating over ListFile to walk all pages automatically.
+    """
+    filenames = set()
+    for page in drive.ListFile({
+        "q": f"'{folder_id}' in parents and trashed=false",
+        "maxResults": 1000,
+    }):
+        for f in page:
+            filenames.add(f["title"])
+    return filenames
 
 
 def upload_bytes_to_drive(drive: GoogleDrive, data: bytes, filename: str, folder_id: str):
