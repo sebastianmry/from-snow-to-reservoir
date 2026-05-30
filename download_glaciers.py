@@ -55,34 +55,48 @@ def download_rgi() -> Path | None:
 
     session = earthaccess.get_requests_https_session()
 
-    # Try candidate URLs until one works
+    # First browse regional_files/ to find the correct subdirectory
+    print(f"  Browsing NSIDC regional_files/ directory...")
+    regional_url = RGI_NSIDC_BASE + "regional_files/"
+    try:
+        r = session.get(regional_url, timeout=30)
+        # Extract subfolder names from directory listing
+        import re as _re
+        subfolders = _re.findall(r'href="([^"]+/)"', r.text)
+        print(f"  Subfolders found: {subfolders}")
+    except Exception as e:
+        print(f"  Could not browse: {e}")
+        subfolders = []
+
+    # Build candidate URLs from discovered subfolders + hardcoded ones
+    dynamic_candidates = [
+        RGI_NSIDC_BASE + "regional_files/" + sf + RGI_FILENAME
+        for sf in subfolders if "RGI" in sf or "rgi" in sf
+    ]
+    all_candidates = dynamic_candidates + RGI_URL_CANDIDATES
+
+    # Try each candidate with a GET request (HEAD returns 401 with this auth)
     working_url = None
-    for url in RGI_URL_CANDIDATES:
+    for url in all_candidates:
         print(f"  Trying: {url}")
         try:
-            r = session.head(url, timeout=30, allow_redirects=True)
+            r = session.get(url, stream=True, timeout=30)
             if r.status_code == 200:
-                working_url = url
-                print(f"  Found!")
-                break
-            else:
-                print(f"  -> {r.status_code}")
+                content_type = r.headers.get("content-type", "")
+                if "html" not in content_type:  # skip HTML error pages
+                    working_url = url
+                    print(f"  Found! ({r.headers.get('content-length', '?')} bytes)")
+                    r.close()
+                    break
+            print(f"  -> {r.status_code}")
+            r.close()
         except Exception as e:
             print(f"  -> ERROR: {e}")
 
     if not working_url:
-        # Browse base directory to find correct structure
-        print(f"\n  Browsing NSIDC directory to find correct path...")
-        try:
-            r = session.get(RGI_NSIDC_BASE, timeout=30)
-            print(f"  Directory listing ({r.status_code}):")
-            for line in r.text.splitlines():
-                if "RGI" in line or "rgi" in line or "href" in line.lower():
-                    print(f"    {line.strip()}")
-        except Exception as e:
-            print(f"  Could not browse directory: {e}")
-        print("\nERROR: Could not find RGI zip. Check directory listing above.")
+        print("\nERROR: Could not find RGI zip on NSIDC.")
         print("Manual download: https://nsidc.org/data/nsidc-0770/versions/7")
+        print("Unpack Region 12 zip into static_data/")
         return None
 
     try:
