@@ -76,6 +76,13 @@ Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Geor
 - Naechster Code-Schritt: `extract_timeseries.py` um `reservoir_area_km2` erweitern = Wasserpixel (1-5) nur **innerhalb** des Stausee-Polygons, getrennt von der gesamten AOI-Wasserflaeche (die auch Fluesse enthaelt).
 - Danach Wasserpegel: Flaeche -> Pegel ueber hypsometrische Kurve aus DEM (Copernicus DEM GLO-30); SAR (DSWx-S1) reaktivieren fuer wolkenunabhaengige Wasserausdehnung -> durchgehende Pegelzeitreihe (urspruengliche Projektidee).
 
+### GEPLANT: S1 (SAR) reaktivieren - braucht ebenfalls Re-Download + Mosaik
+S1 hatte dasselbe MGRS-Kachel-Problem wie HLS. Zum Reaktivieren:
+1. S1-Collection in `COLLECTIONS` (download_to_drive.py) einkommentieren - der Loop wendet MGRS-Namen + volle AOI automatisch an.
+2. Alte S1-Dateien im Drive loeschen (alte Namen ohne MGRS).
+3. S1 neu herunterladen.
+4. S1-Abschnitt in `extract_timeseries.py` auf Datum-Gruppierung + `mosaic_tiles` umstellen (nutzt aktuell noch per-Datei `extract_s1_stats`).
+
 ### GEPLANT (Stufe 4): Auto-Updates / Deployment - OPTION A
 - GitHub Action taeglich: `download_to_drive.py` + `extract_timeseries.py`, Parquets auto-committen.
 - GitHub Secrets fuer NASA + Google Drive credentials.
