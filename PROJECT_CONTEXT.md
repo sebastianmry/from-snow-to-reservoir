@@ -26,33 +26,59 @@ Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Geor
 - **Resume-Logik:** Überspringt bereits im Drive existierende Dateien sauber anhand des Namens.
 
 ### Stufe 2: `extract_timeseries.py` (Wissenschaftliche Auswertung)
-- **Gletscher-Integrierung:** Lädt das Randolph Glacier Inventory (RGI v7, Region 12 - Kaukasus) automatisch via Python aus dem Netz nach `static_data/`, falls nicht lokal vorhanden.
 - **Qualitaetsfilter:**
   * `MIN_VALID_PCT = 80%`: Szenen mit weniger als 80% gültiger AOI-Abdeckung werden übersprungen.
   * `MAX_CLOUD_PCT = 30%`: Szenen mit mehr als 30% Wolkenbedeckung werden übersprungen.
+- **Shape-Fix:** Wenn WTR- und CLOUD-Kachel unterschiedliche Pixelgroessen haben (MGRS-Kachel-Mismatch), wird CLOUD via `rasterio.warp.reproject` auf das WTR-Grid umprojiziert.
 - **Verschneidungs-Logik (Raster & Vektor):**
   * Stausee-Wasserfläche: Pixelwerte 1-5 im `B01_WTR`-Band.
   * Saisonale Schneedecke: Pixelwert 252 (Schnee) *außerhalb* der RGI-Gletscherpolygone.
   * Schneebedeckter Gletscher: Pixelwert 252 (Schnee) *innerhalb* der RGI-Gletscherpolygone.
   * Blankes Gletschereis: Gesamtfläche der RGI-Polygone abzüglich der schneebedeckten Gletscherfläche (Indikator für sommerliche Gletscherschmelze).
+- **RGI-Lookup:** `find_rgi()` sucht das Shapefile in `static_data/` (Download via separates `download_glaciers.py`).
 - **Output-Spalten:** `date, water_area_km2, seasonal_snow_km2, snow_on_glacier_km2, bare_ice_km2, glacier_total_km2, cloud_cover_percent, valid_px_pct`
-- **Output-Dateien:** `enguri_timeseries.csv/.parquet`, `zhinvali_timeseries.csv/.parquet`
+- **Output-Dateien:** `enguri_timeseries.csv/.parquet`, `zhinvali_timeseries.csv/.parquet` (lokal im Projektroot, NICHT im Drive)
 
-### Stufe 3: Visualisierung / Dashboard (Zukünftig)
-- **Framework:** Streamlit.
-- **Features:** Interaktive Karten (Folium/Mapbox), animierte Zeitreihen-Plots.
-- **Zusatz-Feature:** Einbindung von statischen Fluss-Vektordaten (OSM/HydroSHEDS) zur optischen Hervorhebung der Zuflüsse aus den Bergen in die Stauseen.
+### `download_glaciers.py` (separates Skript)
+- Laedt RGI v7 Region 12 von NSIDC-0770 via `earthaccess.get_requests_https_session()` (NICHT fsspec - liefert HTML-Loginseite).
+- Browst `regional_files/RGI2000-v7.0-G/` und matcht die Region-12-Datei am echten Dateinamen.
+- WICHTIG: NSIDC-Dateiname nutzt Unterstriche: `RGI2000-v7.0-G-12_caucasus_middle_east.shp` (nicht Bindestrich). Glob nutzt Wildcard `caucasus*middle_east`.
+- 204 Gletscherpolygone fuer Enguri, 154 fuer Zhinvali nach AOI-Clip.
+
+### `download_rivers.py` (separates Skript)
+- Laedt HydroRIVERS v10 Europe (~68 MB) von HydroSHEDS (oeffentlich, kein Login).
+- Clippt auf beide AOIs, filtert grosse Fluesse (`ORD_FLOW <= 6`), schreibt `static_data/georgia_rivers.geojson` (461 Segmente, getaggt per AOI).
+
+### Stufe 3: `app.py` Streamlit Dashboard (LAEUFT)
+- **Framework:** Streamlit + Folium + Plotly.
+- KPI-Kacheln (aktuelle Wasserflaeche/Schnee vs. historisches Max), Datums-Slider, AOI-Auswahl.
+- Folium-Karte: AOI-Box, RGI-Gletscherpolygone, HydroRIVERS-Fluesse, Staudamm-Pin.
+- Plotly-Charts: Wasserflaeche (Linie), Schnee/Eis (Stacked Area), Wolkenluecken als graue Balken.
+- Mock-Daten-Fallback wenn Parquet noch fehlt.
 
 ---
 
 ## 3. Aktueller Bearbeitungsstand (Stand: 2026-05-30)
 
-- **Stufe 1 laeuft:** HLS-Download fuer Enguri aktiv (~18% abgeschlossen, 295/1658 Dateien). S1 temporaer deaktiviert nach Laptop-Absturz.
-- **Stufe 2 fertig implementiert:** Alle Qualitaetsfilter, Gletscherverschneidung und Parquet-Output sind bereit.
-- **Stufe 3 (Dashboard) noch nicht begonnen.**
+- **Stufe 1 fertig:** HLS-Download Enguri + Zhinvali komplett im Drive.
+- **Stufe 2 fertig:** Zeitreihen mit Gletscherverschneidung berechnet, Werte plausibel (Sommer `bare_ice` hoch, Winter `snow` hoch).
+- **Stufe 3 laeuft:** Dashboard funktioniert mit echten Daten, Gletscher- und Flussdaten geladen.
 
-### Bekannte Eigenheit: Drive-Ordnerstruktur
-`download_to_drive.py` legt die Ordner `hls/` und `s1/` direkt im Drive-Root an (nicht unter `DRIVE_ROOT_FOLDER_ID`). `extract_timeseries.py` sucht diese Ordner ebenfalls unter `"root"`. Beide Skripte sind konsistent - nicht aendern solange Daten vorhanden sind.
+### GEPLANT (naechster Schritt): Raster-Overlay im Dashboard
+- ANGEREICHERTE Version: `B01_WTR` GeoTIFF pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
+  Wasser (1-5) = blau, saisonaler Schnee = weiss, Schnee-auf-Gletscher = hellblau, blankes Gletschereis = tuerkis/grau.
+- Als Folium `ImageOverlay` auf die Karte legen.
+- Zu loesen: UTM->Lat/Lon Reprojektion, Caching pro Datum (Drive-Load langsam).
+
+### GEPLANT (Stufe 4): Auto-Updates / Deployment - OPTION A
+- GitHub Action taeglich: `download_to_drive.py` + `extract_timeseries.py`, Parquets auto-committen.
+- GitHub Secrets fuer NASA + Google Drive credentials.
+- Streamlit Cloud verbunden mit Repo, oeffentliche URL fuer die Doku.
+
+### Bekannte Eigenheiten
+- **Drive-Ordnerstruktur:** `download_to_drive.py` legt `hls/` und `s1/` direkt im Drive-Root an (nicht unter `DRIVE_ROOT_FOLDER_ID`). `extract_timeseries.py` sucht ebenfalls unter `"root"`. Konsistent - nicht aendern.
+- **MGRS-Kachel-Kollisionen:** Mehrere Dateien pro Datum mit gleichem Output-Namen -> verrauschte Zeitreihen. TODO: Dedup-Filter (beste Kachel pro Datum nach `valid_px_pct`).
+- **Drive-Pagination:** `get_existing_filenames` nutzt `maxResults=1000` gegen das 100-Datei-Limit der API.
 
 ---
 
