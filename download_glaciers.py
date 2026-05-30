@@ -50,14 +50,21 @@ def download_rgi() -> Path | None:
     print(f"URL: {RGI_NSIDC_URL}")
 
     try:
-        # earthaccess.get_fsspec_https_session() handles NASA Earthdata
-        # OAuth token refresh and redirects automatically
-        fs = earthaccess.get_fsspec_https_session()
-        with fs.open(RGI_NSIDC_URL) as f:
-            data = f.read()
+        # earthaccess.get_requests_https_session() returns a requests.Session
+        # with NASA Earthdata Bearer token - handles NSIDC OAuth redirects correctly
+        session = earthaccess.get_requests_https_session()
+        response = session.get(RGI_NSIDC_URL, stream=True, timeout=300)
+        response.raise_for_status()
+
+        total = int(response.headers.get("content-length", 0))
+        downloaded = 0
         with open(RGI_ZIP, "wb") as out:
-            out.write(data)
-        print(f"Download complete ({len(data) / 1e6:.1f} MB)")
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                out.write(chunk)
+                downloaded += len(chunk)
+                if total:
+                    print(f"\r  {downloaded / 1e6:.1f} / {total / 1e6:.1f} MB", end="", flush=True)
+        print(f"\nDownload complete ({downloaded / 1e6:.1f} MB)")
     except Exception as e:
         print(f"ERROR downloading RGI: {e}")
         print("Alternative: download manually from https://nsidc.org/data/nsidc-0770/versions/7")
