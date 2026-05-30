@@ -17,17 +17,16 @@ Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Geor
 
 ## 2. Pipeline-Architektur
 
-### Stufe 1: `download_to_drive.py` (Datenbeschaffung)
-- **Quelle:** NASA OPERA DSWx Produkte via `earthaccess`.
-- **Aktueller Status:** S1 (Radar) ist temporär pausiert. Fokus liegt komplett auf HLS (Optisch).
-- **Spezifikation:** Lädt nur `B01_WTR` und `B09_CLOUD`.
-- **Eigenschaften:** Robustes Error-Handling (Exponential Backoff bei Verbindungsabbrüchen), Google Drive Anbindung via `pydrive2`.
-- **Hardware-Schonung:** Läuft stabil auf `MAX_WORKERS = 2` zur Vermeidung von RAM-Abstürzen auf dem Laptop.
-- **Resume-Logik:** Überspringt bereits im Drive existierende Dateien sauber anhand des Namens.
+### Stufe 1: `download_hls.py` / `download_s1.py` (Datenbeschaffung)
+- **Aufteilung:** Zwei schlanke Start-Skripte (HLS optisch, S1 Radar); gemeinsame Logik in `download_common.py` (nie direkt ausgefuehrt).
+- **Quelle:** NASA OPERA DSWx Produkte via `earthaccess`. HLS laedt `B01_WTR` + `B09_CLOUD`, S1 laedt `B01_WTR`.
+- **Footprint-Vorfilter:** Pro Datum wird die Vereinigung der Kachel-Footprints gegen das AOI geprueft; nur Tage mit >= 99% AOI-Abdeckung werden ueberhaupt heruntergeladen (`FOOTPRINT_MIN_COVER`). Spart Bandbreite, reine Geometrie-Rechnung.
+- **Drive-Struktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`. Dateinamen mit MGRS-Kachel-ID.
+- **Eigenschaften:** Exponential Backoff bei Verbindungsabbruechen, `MAX_WORKERS = 2` (RAM-Schonung), Resume-Logik via Dateiname-Vergleich (paginiert).
 
 ### Stufe 2: `extract_timeseries.py` (Wissenschaftliche Auswertung)
 - **Qualitaetsfilter:**
-  * `MIN_VALID_PCT = 80%`: Szenen mit weniger als 80% gültiger AOI-Abdeckung werden übersprungen.
+  * `MIN_VALID_PCT = 95%`: Szenen mit weniger als 95% gültiger AOI-Abdeckung werden übersprungen.
   * `MAX_CLOUD_PCT = 30%`: Szenen mit mehr als 30% Wolkenbedeckung werden übersprungen.
 - **Shape-Fix:** Wenn WTR- und CLOUD-Kachel unterschiedliche Pixelgroessen haben (MGRS-Kachel-Mismatch), wird CLOUD via `rasterio.warp.reproject` auf das WTR-Grid umprojiziert.
 - **Verschneidungs-Logik (Raster & Vektor):**
@@ -94,7 +93,7 @@ S1 hatte dasselbe MGRS-Kachel-Problem wie HLS. Zum Reaktivieren:
 - **Achtung:** Dateinamen-Aenderung erfordert vollstaendigen Re-Download. Alte HLS-Dateien (ohne MGRS) ggf. vorher im Drive loeschen.
 
 ### Bekannte Eigenheiten
-- **Drive-Ordnerstruktur:** `download_to_drive.py` legt `hls/` und `s1/` direkt im Drive-Root an (nicht unter `DRIVE_ROOT_FOLDER_ID`). `extract_timeseries.py` sucht ebenfalls unter `"root"`. Konsistent - nicht aendern.
+- **Drive-Ordnerstruktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/` (Parent-Ordner `DRIVE_PARENT = "OPERA_DSWx"`). Sowohl Download-Skripte als auch `extract_timeseries.py` nutzen diesen Parent.
 - **Drive-Pagination:** `get_existing_filenames` nutzt `maxResults=1000` gegen das 100-Datei-Limit der API.
 
 ---

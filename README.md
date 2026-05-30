@@ -22,6 +22,7 @@ Georgiens Stromversorgung haengt zu etwa 80 % von der Wasserkraft ab. Saisonale 
 - **OPERA DSWx-S1 (Level-3):** Radar-basierte Wasserklassifikation (B01_WTR), ~6-Tage Revisit *(temporaer pausiert)*
 - **Randolph Glacier Inventory v7 (RGI), Region 12:** Gletscher-Polygone fuer den Kaukasus (NSIDC, via `download_glaciers.py`)
 - **HydroRIVERS v10:** Flussnetz (HydroSHEDS), gefiltert auf das Einzugsgebiet oberhalb des Staudamms (via `download_rivers.py`)
+- **HydroLAKES v1.0:** Exakte Stausee-Polygone (HydroSHEDS), via `download_reservoirs.py`
 
 Zeitraum: August 2024 bis heute
 
@@ -31,8 +32,8 @@ Zeitraum: August 2024 bis heute
 NASA Earthdata (earthaccess)
         |
         v
-download_to_drive.py     # In-Memory Clip auf AOI, alle MGRS-Kacheln, Upload nach Google Drive
-        |                # DSWx-HLS: B01_WTR (Wasser/Schnee) + B09_CLOUD (Wolken)
+download_hls.py / download_s1.py   # Footprint-Vorfilter, In-Memory Clip auf AOI,
+        |  (download_common.py)    # alle MGRS-Kacheln, Upload nach Google Drive
         v
 extract_timeseries.py    # Pro Datum: alle Kacheln zu AOI-Mosaik mergen (EPSG:4326),
         |                # Raster-Vektor-Verschneidung mit RGI-Gletschern, Qualitaetsfilter
@@ -40,19 +41,26 @@ extract_timeseries.py    # Pro Datum: alle Kacheln zu AOI-Mosaik mergen (EPSG:43
 app.py (Streamlit)       # Interaktive Karte (Folium) + Zeitreihen (Plotly)
 
 Statische Geodaten (einmalig):
-  download_glaciers.py   # RGI v7 Region 12 Gletscherpolygone -> static_data/
-  download_rivers.py     # HydroRIVERS, Einzugsgebiet oberhalb Staudamm -> static_data/
+  download_glaciers.py     # RGI v7 Region 12 Gletscherpolygone -> static_data/
+  download_rivers.py       # HydroRIVERS, Einzugsgebiet oberhalb Staudamm -> static_data/
+  download_reservoirs.py   # HydroLAKES, exakte Stausee-Polygone -> static_data/
 ```
+
+Drive-Ordnerstruktur: `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`
 
 ### Mosaik-Ansatz
 
-Stausee und Gletscher koennen in unterschiedlichen MGRS-Kacheln liegen (z.B. Zhinvali: Stausee im Sueden, Gletscher im Norden). Daher laedt `download_to_drive.py` **alle** Kacheln der AOI (Dateiname mit MGRS-Kachel-ID), und `extract_timeseries.py` fuegt pro Datum alle Kacheln zu einem vollstaendigen AOI-Mosaik in EPSG:4326 zusammen (auch ueber UTM-Zonengrenzen hinweg). Das garantiert volle Gebietsabdeckung und glaettet das Kachel-Rauschen.
+Stausee und Gletscher koennen in unterschiedlichen MGRS-Kacheln liegen (z.B. Zhinvali: Stausee im Sueden, Gletscher im Norden). Daher laedt `download_hls.py` / `download_s1.py` **alle** Kacheln der AOI (Dateiname mit MGRS-Kachel-ID), und `extract_timeseries.py` fuegt pro Datum alle Kacheln zu einem vollstaendigen AOI-Mosaik in EPSG:4326 zusammen (auch ueber UTM-Zonengrenzen hinweg). Das garantiert volle Gebietsabdeckung und glaettet das Kachel-Rauschen.
+
+### Footprint-Vorfilter
+
+Vor dem Download wird pro Datum die Vereinigung der Kachel-Footprints gegen das AOI geprueft. Nur Tage deren Kacheln zusammen >= 99% des AOI abdecken werden ueberhaupt heruntergeladen — Teilabdeckungs-Tage fallen weg, bevor Bandbreite verschwendet wird (reine Geometrie-Rechnung, Sekunden).
 
 ## Qualitaetsfilter
 
 | Filter | Schwellenwert | Begruendung |
 |--------|--------------|-------------|
-| AOI-Abdeckung | >= 80% valide Pixel | Verwirft Szenen ohne vollstaendige Gebietsabdeckung (relativ zur ganzen AOI dank Mosaik) |
+| AOI-Abdeckung | >= 95% valide Pixel | Verwirft Szenen ohne vollstaendige Gebietsabdeckung (relativ zur ganzen AOI dank Mosaik) |
 | Bewoelkung | <= 30% Wolken im AOI | Wissenschaftlich gaengiger Grenzwert fuer optische Fernerkundung |
 
 ## Berechnete Metriken (pro Datum und AOI)
@@ -88,9 +96,11 @@ NASA Earthdata Login:
 # 1. Statische Geodaten einmalig laden
 python download_glaciers.py     # RGI v7 Gletscher (NSIDC, NASA-Login)
 python download_rivers.py       # HydroRIVERS Einzugsgebiet (oeffentlich)
+python download_reservoirs.py   # HydroLAKES Stausee-Polygone (oeffentlich)
 
 # 2. Satellitendaten herunterladen und prozessieren
-python download_to_drive.py     # OPERA DSWx-HLS -> Google Drive
+python download_hls.py          # OPERA DSWx-HLS (optisch) -> Google Drive
+python download_s1.py           # OPERA DSWx-S1 (Radar)    -> Google Drive
 python extract_timeseries.py    # Mosaik + Zeitreihen -> *_timeseries.parquet
 
 # 3. Dashboard starten
@@ -101,10 +111,13 @@ streamlit run app.py
 
 | Skript | Funktion |
 |--------|----------|
-| `download_to_drive.py` | OPERA DSWx-HLS Granules suchen, auf AOI clippen, alle MGRS-Kacheln nach Google Drive laden (Resume-Logik) |
+| `download_hls.py` | OPERA DSWx-HLS (optisch, B01_WTR + B09_CLOUD) nach Google Drive laden |
+| `download_s1.py` | OPERA DSWx-S1 (Radar, B01_WTR) nach Google Drive laden |
+| `download_common.py` | Gemeinsame Logik beider Downloads: Auth, Drive, Footprint-Vorfilter, Clipping, MGRS-Namen (wird nicht direkt ausgefuehrt) |
 | `extract_timeseries.py` | Pro Datum Kachel-Mosaik bilden, mit RGI-Gletschern verschneiden, Zeitreihen als CSV + Parquet speichern |
 | `download_glaciers.py` | RGI v7 Region 12 Gletscherpolygone von NSIDC laden (via earthaccess) |
 | `download_rivers.py` | HydroRIVERS laden, auf Einzugsgebiet oberhalb des Staudamms filtern (Fliessnetz-Topologie), auf AOI clippen |
+| `download_reservoirs.py` | HydroLAKES laden, exakte Stausee-Polygone extrahieren |
 | `app.py` | Streamlit-Dashboard: Folium-Karte (AOI, Gletscher, Fluesse, Staudamm) + Plotly-Zeitreihen |
 
 ## Tech Stack
