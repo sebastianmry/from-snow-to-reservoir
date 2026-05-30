@@ -16,9 +16,11 @@ Run once before app.py:
 """
 
 import zipfile
+from collections import defaultdict, deque
 from pathlib import Path
 
 import geopandas as gpd
+from shapely.geometry import Point, box as shp_box
 import pandas as pd
 import requests
 
@@ -35,10 +37,12 @@ RIVERS_SHP_GLOB = "HydroRIVERS_v10_eu.shp"
 
 OUTPUT_GEOJSON = STATIC_DIR / "georgia_rivers.geojson"
 
-# AOI bounding boxes (min_lon, min_lat, max_lon, max_lat) - same as the pipeline
+# AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat).
+# The dam point defines the catchment outlet: only rivers UPSTREAM of it
+# (i.e. that feed the reservoir) are kept.
 AOIS = {
-    "enguri":   (41.70, 42.55, 42.80, 43.15),
-    "zhinvali": (44.30, 42.00, 45.15, 42.80),
+    "enguri":   {"bbox": (41.70, 42.55, 42.80, 43.15), "dam": (42.032, 42.753)},
+    "zhinvali": {"bbox": (44.30, 42.00, 45.15, 42.80), "dam": (44.771, 42.133)},
 }
 
 # Only keep major rivers: ORD_FLOW is the logarithmic flow-order class.
@@ -96,11 +100,46 @@ def download_rivers_shp() -> Path | None:
 # CLIP & EXPORT
 # ─────────────────────────────────────────────
 
+def upstream_of_dam(gdf: gpd.GeoDataFrame, dam_lon: float, dam_lat: float) -> gpd.GeoDataFrame:
+    """Keep only river segments upstream of the dam (the reservoir catchment).
+
+    Uses the HydroRIVERS flow topology: every segment (HYRIV_ID) flows into the
+    segment given by NEXT_DOWN. We locate the segment nearest the dam, then walk
+    the network upstream (against the flow) and keep everything that drains to it.
+    """
+    if "HYRIV_ID" not in gdf.columns or "NEXT_DOWN" not in gdf.columns:
+        print("  (no flow topology fields - skipping upstream filter)")
+        return gdf
+
+    # Segment nearest the dam = catchment outlet
+    dam = Point(dam_lon, dam_lat)
+    outlet_id = gdf.loc[gdf.geometry.distance(dam).idxmin(), "HYRIV_ID"]
+
+    # Reverse adjacency: which segments flow INTO each segment
+    flows_into = defaultdict(list)
+    for hid, nd in zip(gdf["HYRIV_ID"], gdf["NEXT_DOWN"]):
+        flows_into[nd].append(hid)
+
+    # BFS upstream from the outlet
+    keep = {outlet_id}
+    queue = deque([outlet_id])
+    while queue:
+        cur = queue.popleft()
+        for up in flows_into.get(cur, []):
+            if up not in keep:
+                keep.add(up)
+                queue.append(up)
+
+    return gdf[gdf["HYRIV_ID"].isin(keep)]
+
+
 def clip_and_export(shp_path: Path):
-    """Clip rivers to both AOIs, tag each feature with its AOI, save as GeoJSON."""
+    """For each AOI: keep upstream-of-dam rivers, clip to AOI, tag, save as GeoJSON."""
     parts = []
-    for name, bbox in AOIS.items():
-        print(f"  Clipping rivers for {name}...")
+    for name, cfg in AOIS.items():
+        bbox = cfg["bbox"]
+        dam_lon, dam_lat = cfg["dam"]
+        print(f"  Processing rivers for {name}...")
         gdf = gpd.read_file(shp_path, bbox=bbox)
         if gdf.empty:
             print(f"  No rivers found in AOI {name}")
@@ -109,13 +148,24 @@ def clip_and_export(shp_path: Path):
         if gdf.crs is None or gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs("EPSG:4326")
 
-        # Filter to major rivers only (ORD_FLOW: lower = larger river)
+        # 1) Keep only the catchment upstream of the dam
+        before = len(gdf)
+        gdf = upstream_of_dam(gdf, dam_lon, dam_lat)
+        print(f"    upstream-of-dam: {len(gdf)}/{before} segments")
+
+        # 2) Drop the smallest tributaries to reduce clutter
         if "ORD_FLOW" in gdf.columns:
             gdf = gdf[gdf["ORD_FLOW"] <= MAX_FLOW_ORDER]
 
+        # 3) Clip geometries exactly to the AOI box (no overhang past the border)
+        gdf = gpd.clip(gdf, shp_box(*bbox))
+        gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()]
+        if gdf.empty:
+            print(f"  No rivers left for {name} after clip")
+            continue
+
         gdf = gdf.copy()
         gdf["aoi"] = name
-        # Keep only the columns we need for the map
         keep = ["aoi", "geometry"]
         if "ORD_FLOW" in gdf.columns:
             keep.insert(1, "ORD_FLOW")

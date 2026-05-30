@@ -10,16 +10,17 @@ Georgiens Stromversorgung haengt zu etwa 80 % von der Wasserkraft ab. Saisonale 
 
 ## Areas of Interest
 
-| AOI | Bbox (min_lon, min_lat, max_lon, max_lat) | Objekte |
-|-----|------------------------------------------|---------|
-| Enguri | 41.70, 42.55, 42.80, 43.15 | Enguri Dam (271 m), starke Vergletscherung rund um Mestia, grenzt an Abchasien |
-| Zhinvali | 44.30, 42.00, 45.15, 42.80 | Zhinvali Dam (Trinkwasser Tbilisi), Gergeti-Gletscher / Kazbek (5 047 m), grenzt an Suedossetien |
+| AOI | Bbox (min_lon, min_lat, max_lon, max_lat) | Staudamm (lon, lat) | Objekte |
+|-----|------------------------------------------|---------------------|---------|
+| Enguri | 41.70, 42.55, 42.80, 43.15 | 42.032, 42.753 | Enguri Dam (271 m), starke Vergletscherung rund um Mestia, grenzt an Abchasien |
+| Zhinvali | 44.30, 42.00, 45.15, 42.80 | 44.771, 42.133 | Zhinvali Dam (Trinkwasser Tbilisi), Gergeti-Gletscher / Kazbek (5 047 m), grenzt an Suedossetien |
 
 ## Daten
 
 - **OPERA DSWx-HLS (Level-3):** Wasserklassifikation (B01_WTR) + Wolkenmaske (B09_CLOUD) aus Landsat-8/9 und Sentinel-2, ~2-3 Tage Revisit
 - **OPERA DSWx-S1 (Level-3):** Radar-basierte Wasserklassifikation (B01_WTR), ~6-Tage Revisit *(temporaer pausiert)*
-- **Randolph Glacier Inventory v7 (RGI), Region 12:** Gletscher-Polygone fuer den Kaukasus (automatischer Download)
+- **Randolph Glacier Inventory v7 (RGI), Region 12:** Gletscher-Polygone fuer den Kaukasus (NSIDC, via `download_glaciers.py`)
+- **HydroRIVERS v10:** Flussnetz (HydroSHEDS), gefiltert auf das Einzugsgebiet oberhalb des Staudamms (via `download_rivers.py`)
 
 Zeitraum: August 2024 bis heute
 
@@ -29,20 +30,28 @@ Zeitraum: August 2024 bis heute
 NASA Earthdata (earthaccess)
         |
         v
-download_to_drive.py     # In-Memory Clip auf AOI, Resume-Logik, Upload nach Google Drive
+download_to_drive.py     # In-Memory Clip auf AOI, alle MGRS-Kacheln, Upload nach Google Drive
         |                # DSWx-HLS: B01_WTR (Wasser/Schnee) + B09_CLOUD (Wolken)
         v
-extract_timeseries.py    # Raster-Vektor-Verschneidung mit RGI-Gletscherpolygonen
-        |                # Qualitaetsfilter: >= 80% AOI-Abdeckung, <= 30% Bewoelkung
+extract_timeseries.py    # Pro Datum: alle Kacheln zu AOI-Mosaik mergen (EPSG:4326),
+        |                # Raster-Vektor-Verschneidung mit RGI-Gletschern, Qualitaetsfilter
         v
-Streamlit App            # Zeitreihen, Karte, Gletscherstatistiken (in Entwicklung)
+app.py (Streamlit)       # Interaktive Karte (Folium) + Zeitreihen (Plotly)
+
+Statische Geodaten (einmalig):
+  download_glaciers.py   # RGI v7 Region 12 Gletscherpolygone -> static_data/
+  download_rivers.py     # HydroRIVERS, Einzugsgebiet oberhalb Staudamm -> static_data/
 ```
+
+### Mosaik-Ansatz
+
+Stausee und Gletscher koennen in unterschiedlichen MGRS-Kacheln liegen (z.B. Zhinvali: Stausee im Sueden, Gletscher im Norden). Daher laedt `download_to_drive.py` **alle** Kacheln der AOI (Dateiname mit MGRS-Kachel-ID), und `extract_timeseries.py` fuegt pro Datum alle Kacheln zu einem vollstaendigen AOI-Mosaik in EPSG:4326 zusammen (auch ueber UTM-Zonengrenzen hinweg). Das garantiert volle Gebietsabdeckung und glaettet das Kachel-Rauschen.
 
 ## Qualitaetsfilter
 
 | Filter | Schwellenwert | Begruendung |
 |--------|--------------|-------------|
-| AOI-Abdeckung | >= 80% valide Pixel | Verwirft MGRS-Randkacheln ohne vollstaendige Gebietsabdeckung |
+| AOI-Abdeckung | >= 80% valide Pixel | Verwirft Szenen ohne vollstaendige Gebietsabdeckung (relativ zur ganzen AOI dank Mosaik) |
 | Bewoelkung | <= 30% Wolken im AOI | Wissenschaftlich gaengiger Grenzwert fuer optische Fernerkundung |
 
 ## Berechnete Metriken (pro Datum und AOI)
@@ -52,7 +61,7 @@ Streamlit App            # Zeitreihen, Karte, Gletscherstatistiken (in Entwicklu
 | `water_area_km2` | Offene Wasserflaeche im Stausee (DSWx-Klassen 1-5) |
 | `seasonal_snow_km2` | Schneebedeckung ausserhalb der RGI-Gletscherpolygone |
 | `snow_on_glacier_km2` | Schneebedeckung innerhalb der RGI-Gletscherpolygone |
-| `bare_ice_km2` | Blankes Gletschereis (Gletscherflaeche minus Schneebdeckung) |
+| `bare_ice_km2` | Blankes Gletschereis (Gletscherflaeche minus Schneebedeckung) — Schmelzindikator |
 | `glacier_total_km2` | Gesamtflaeche der RGI-Polygone im AOI |
 | `cloud_cover_percent` | Anteil bewoelkter Pixel im AOI |
 | `valid_px_pct` | Anteil valider (nicht-NoData) Pixel im AOI |
@@ -72,34 +81,34 @@ NASA Earthdata Login:
 - Konto unter [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov) anlegen
 - Beim ersten Start wird nach Username/Passwort gefragt (wird in `_netrc` gespeichert)
 
+## Workflow
+
+```bash
+# 1. Statische Geodaten einmalig laden
+python download_glaciers.py     # RGI v7 Gletscher (NSIDC, NASA-Login)
+python download_rivers.py       # HydroRIVERS Einzugsgebiet (oeffentlich)
+
+# 2. Satellitendaten herunterladen und prozessieren
+python download_to_drive.py     # OPERA DSWx-HLS -> Google Drive
+python extract_timeseries.py    # Mosaik + Zeitreihen -> *_timeseries.parquet
+
+# 3. Dashboard starten
+streamlit run app.py
+```
+
 ## Skripte
 
-### `download_to_drive.py`
-Sucht OPERA DSWx-HLS Granules via NASA earthaccess, clippt sie in-memory auf die AOI-Bboxen und laedt sie nach Google Drive hoch. Resume-Logik ueberspringt bereits vorhandene Dateien anhand des Dateinamens.
-
-```bash
-cd "Pfad/zum/Projektordner"
-python download_to_drive.py
-```
-
-### `extract_timeseries.py`
-Laedt RGI v7 Gletscherdaten automatisch herunter (Zenodo), liest alle GeoTIFFs aus Google Drive in-memory, verschneidet Raster- mit Vektordaten und speichert Zeitreihen pro AOI.
-
-```bash
-python extract_timeseries.py
-```
-
-Output: `enguri_timeseries.csv/.parquet`, `zhinvali_timeseries.csv/.parquet`
-
-## Aktueller Datenstand (Mai 2026)
-
-- **DSWx-HLS Enguri:** Download laufend (~860 Granules, Aug 2024 - Mai 2026)
-- **DSWx-HLS Zhinvali:** Download ausstehend
-- **DSWx-S1:** Temporaer deaktiviert, wird nach Abschluss des HLS-Downloads fortgesetzt
+| Skript | Funktion |
+|--------|----------|
+| `download_to_drive.py` | OPERA DSWx-HLS Granules suchen, auf AOI clippen, alle MGRS-Kacheln nach Google Drive laden (Resume-Logik) |
+| `extract_timeseries.py` | Pro Datum Kachel-Mosaik bilden, mit RGI-Gletschern verschneiden, Zeitreihen als CSV + Parquet speichern |
+| `download_glaciers.py` | RGI v7 Region 12 Gletscherpolygone von NSIDC laden (via earthaccess) |
+| `download_rivers.py` | HydroRIVERS laden, auf Einzugsgebiet oberhalb des Staudamms filtern (Fliessnetz-Topologie), auf AOI clippen |
+| `app.py` | Streamlit-Dashboard: Folium-Karte (AOI, Gletscher, Fluesse, Staudamm) + Plotly-Zeitreihen |
 
 ## Tech Stack
 
-Python 3.11 | earthaccess | rasterio | rioxarray | geopandas | pydrive2 | pandas | pyarrow | tqdm | streamlit | plotly | GitHub
+Python 3.11 | earthaccess | rasterio | rioxarray | geopandas | shapely | pydrive2 | pandas | pyarrow | tqdm | streamlit | plotly | folium | streamlit-folium
 
 ## Lizenz
 

@@ -29,9 +29,11 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.features import rasterize
-from rasterio.warp import transform as warp_transform
+from rasterio.io import MemoryFile
+from rasterio.enums import Resampling
+import rioxarray  # noqa: F401  (registers the .rio accessor)
+from rioxarray.merge import merge_arrays
 import geopandas as gpd
-from shapely.geometry import box
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 
@@ -197,40 +199,66 @@ def extract_s1_stats(data: bytes) -> dict:
     }
 
 
-def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
-                      glaciers: gpd.GeoDataFrame | None) -> dict | None:
+def _open_da(data: bytes):
+    """Open GeoTIFF bytes as an in-memory rioxarray DataArray (fully loaded)."""
+    with MemoryFile(data) as mf:
+        with mf.open() as ds:
+            return rioxarray.open_rasterio(ds).load()
+
+
+def mosaic_tiles(tile_bytes: list[bytes], nodata: int, clip_box: tuple):
+    """Reproject every tile to EPSG:4326, merge into one mosaic, pad to full AOI.
+
+    Different MGRS tiles can sit in different UTM zones, so we reproject each to
+    a common geographic CRS before merging. Padding to the AOI bbox makes the
+    valid-pixel percentage AOI-relative (not tile-relative).
     """
-    Water + snow/glacier stats from DSWx-HLS B01_WTR with cloud masking.
-    Returns None if cloud cover > MAX_CLOUD_PCT.
+    arrays = []
+    for data in tile_bytes:
+        try:
+            da = _open_da(data)
+            da = da.rio.reproject("EPSG:4326", resampling=Resampling.nearest, nodata=nodata)
+            arrays.append(da)
+        except Exception as e:
+            print(f"(tile skip: {e})", end=" ")
+    if not arrays:
+        return None
+
+    merged = arrays[0] if len(arrays) == 1 else merge_arrays(arrays, nodata=nodata)
+    # Pad to the full AOI extent so coverage is measured against the whole AOI
+    merged = merged.rio.pad_box(clip_box[0], clip_box[1], clip_box[2], clip_box[3],
+                                constant_values=nodata)
+    return merged
+
+
+def _pixel_size_km2_da(da) -> float:
+    """Approximate pixel area (km2) for a geographic (EPSG:4326) DataArray."""
+    t = da.rio.transform()
+    res_x, res_y = abs(t.a), abs(t.e)
+    left, bottom, right, top = da.rio.bounds()
+    center_lat = (bottom + top) / 2
+    return (res_x * 111.32 * np.cos(np.radians(center_lat))) * (res_y * 110.574)
+
+
+def extract_hls_stats(wtr_da, cloud_da, glaciers: gpd.GeoDataFrame | None) -> dict | None:
     """
-    with rasterio.open(io.BytesIO(wtr_data)) as src:
-        wtr       = src.read(1)
-        px        = pixel_size_km2(src)
-        raster_crs = src.crs
-        transform  = src.transform
-        shape      = wtr.shape
+    Water + snow/glacier stats from a mosaicked DSWx-HLS B01_WTR DataArray.
+    wtr_da / cloud_da are EPSG:4326 mosaics (output of mosaic_tiles).
+    Returns None if AOI coverage < MIN_VALID_PCT or cloud cover > MAX_CLOUD_PCT.
+    """
+    wtr       = wtr_da.values[0]
+    px        = _pixel_size_km2_da(wtr_da)
+    transform = wtr_da.rio.transform()
+    raster_crs = wtr_da.rio.crs
+    shape     = wtr.shape
 
     valid = wtr != NODATA
     cloud = np.zeros_like(wtr, dtype=bool)
 
-    if cloud_data is not None:
-        with rasterio.open(io.BytesIO(cloud_data)) as src:
-            cloud_arr = src.read(1)
-            # If WTR and CLOUD come from different MGRS tiles (shape mismatch),
-            # reproject CLOUD onto the WTR grid so array operations work correctly.
-            if cloud_arr.shape != wtr.shape:
-                from rasterio.warp import reproject, Resampling
-                cloud_reproj = np.zeros(shape, dtype=cloud_arr.dtype)
-                reproject(
-                    source=cloud_arr,
-                    destination=cloud_reproj,
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=raster_crs,
-                    resampling=Resampling.nearest,
-                )
-                cloud_arr = cloud_reproj
+    if cloud_da is not None:
+        # Align CLOUD mosaic onto the WTR grid (same extent/resolution)
+        cloud_aligned = cloud_da.rio.reproject_match(wtr_da, resampling=Resampling.nearest)
+        cloud_arr = cloud_aligned.values[0]
         cloud = np.isin(cloud_arr, list(CLOUD_VALUES))
 
     n_valid = int(np.sum(valid))
@@ -239,7 +267,6 @@ def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
 
     if valid_pct < MIN_VALID_PCT:
         return None
-
     if cloud_pct > MAX_CLOUD_PCT:
         return None
 
@@ -247,11 +274,10 @@ def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
     water_mask  = np.isin(wtr, list(WATER_VALUES)) & usable
     snow_mask   = (wtr == SNOW_VALUE) & usable
 
-    # Glacier rasterization
     glacier_mask = rasterize_glaciers(glaciers, raster_crs, transform, shape)
 
-    snow_on_glacier  = snow_mask & glacier_mask
-    snow_seasonal    = snow_mask & ~glacier_mask
+    snow_on_glacier   = snow_mask & glacier_mask
+    snow_seasonal     = snow_mask & ~glacier_mask
     glacier_total_km2 = float(np.sum(glacier_mask & usable) * px)
     bare_ice_km2      = max(0.0, glacier_total_km2 - float(np.sum(snow_on_glacier) * px))
 
@@ -262,7 +288,7 @@ def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
         "bare_ice_km2":        bare_ice_km2,
         "glacier_total_km2":   glacier_total_km2,
         "cloud_cover_percent": round(cloud_pct, 2),
-        "valid_px_pct":        round(float(n_valid) / wtr.size * 100, 2),
+        "valid_px_pct":        round(valid_pct, 2),
     }
 
 
@@ -288,7 +314,14 @@ def save_outputs(rows: list[dict], fieldnames: list[str], stem: str):
 
 
 def parse_filename(title: str) -> tuple[str, str, str] | None:
-    m = re.match(r"(enguri|zhinvali)_(\d{8})_(B\d+[\w\-]+?)_clipped\.tif", title)
+    """Parse site, date, layer from a filename.
+    Handles both new MGRS-tagged names (site_date_TILE_layer_clipped.tif)
+    and old names without a tile id (site_date_layer_clipped.tif).
+    """
+    m = re.match(
+        r"(enguri|zhinvali)_(\d{8})_(?:T\d{2}[A-Z]{3}_)?(B\d+[\w\-]+?)_clipped\.tif",
+        title,
+    )
     if not m:
         return None
     return m.group(1), m.group(2), m.group(3)
@@ -373,28 +406,41 @@ def main():
 
         files = list_tifs_in_folder(drive, site_folder)
 
-        wtr_by_date:   dict[str, dict] = {}
-        cloud_by_date: dict[str, dict] = {}
+        # Group ALL tiles per date (multiple MGRS tiles cover the AOI)
+        wtr_by_date:   dict[str, list] = {}
+        cloud_by_date: dict[str, list] = {}
         for f in files:
             meta = parse_filename(f["title"])
             if not meta:
                 continue
             _, date_str, layer = meta
             if "B01_WTR" in layer:
-                wtr_by_date[date_str] = f
+                wtr_by_date.setdefault(date_str, []).append(f)
             elif "B09_CLOUD" in layer:
-                cloud_by_date[date_str] = f
+                cloud_by_date.setdefault(date_str, []).append(f)
 
         dates = sorted(wtr_by_date.keys())
         print(f"  {site}: {len(dates)} WTR dates, {len(cloud_by_date)} CLOUD dates")
 
         for i, date_str in enumerate(dates, 1):
-            cloud_file = cloud_by_date.get(date_str)
-            print(f"  [{i:>3}/{len(dates)}] {site}_hls_{date_str} ...", end=" ", flush=True)
+            wtr_files   = wtr_by_date[date_str]
+            cloud_files = cloud_by_date.get(date_str, [])
+            n_tiles = len(wtr_files)
+            print(f"  [{i:>3}/{len(dates)}] {site}_hls_{date_str} ({n_tiles} tiles) ...",
+                  end=" ", flush=True)
             try:
-                wtr_data   = read_bytes(wtr_by_date[date_str])
-                cloud_data = read_bytes(cloud_file) if cloud_file else None
-                stats = extract_hls_stats(wtr_data, cloud_data, glaciers)
+                # Mosaic all WTR (and CLOUD) tiles for this date into one AOI raster
+                wtr_mosaic = mosaic_tiles([read_bytes(f) for f in wtr_files],
+                                          NODATA, aoi["clip_box"])
+                if wtr_mosaic is None:
+                    print("skipped (no readable tiles)")
+                    continue
+                cloud_mosaic = None
+                if cloud_files:
+                    cloud_mosaic = mosaic_tiles([read_bytes(f) for f in cloud_files],
+                                                NODATA, aoi["clip_box"])
+
+                stats = extract_hls_stats(wtr_mosaic, cloud_mosaic, glaciers)
                 if stats is None:
                     print(f"skipped (coverage < {MIN_VALID_PCT}% or cloud > {MAX_CLOUD_PCT}%)")
                     continue

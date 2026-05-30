@@ -17,6 +17,9 @@ __pycache__/
 venv/
 env/
 
+# Lokale Editor-/Tool-Einstellungen
+.claude/settings.local.json
+
 # Data / Output (zu groß für GitHub)
 data/
 static_data/
