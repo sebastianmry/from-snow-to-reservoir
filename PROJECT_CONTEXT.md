@@ -64,11 +64,12 @@ Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Geor
 - **Stufe 2 fertig:** Zeitreihen mit Gletscherverschneidung berechnet, Werte plausibel (Sommer `bare_ice` hoch, Winter `snow` hoch).
 - **Stufe 3 laeuft:** Dashboard funktioniert mit echten Daten, Gletscher- und Flussdaten geladen.
 
-### GEPLANT (naechster Schritt): Raster-Overlay im Dashboard
-- ANGEREICHERTE Version: `B01_WTR` GeoTIFF pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
+### GEPLANT (naechster Schritt): Raster-Overlay (TIFs) im Dashboard mit Zeit-Durchschau
+- Karte soll die eigentlichen GeoTIFFs anzeigen und gestylt darstellen, sodass man per Datums-Slider durch die Szenen blaettern und die Veraenderungen ueber die Zeit sehen kann (Schnee/Eis/Wasser im Jahresverlauf).
+- ANGEREICHERTE Version: `B01_WTR` (Mosaik) pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
   Wasser (1-5) = blau, saisonaler Schnee = weiss, Schnee-auf-Gletscher = hellblau, blankes Gletschereis = tuerkis/grau.
-- Als Folium `ImageOverlay` auf die Karte legen.
-- Zu loesen: UTM->Lat/Lon Reprojektion, Caching pro Datum (Drive-Load langsam).
+- Als Folium `ImageOverlay` auf die Karte legen; Datums-Auswahl steuert das gezeigte Raster.
+- Zu loesen: UTM->Lat/Lon Reprojektion, Caching pro Datum (Drive-Load langsam), evtl. vorgerenderte PNG-Overlays fuer fluessiges Durchblaettern.
 
 ### GEPLANT (Stufe 4): Auto-Updates / Deployment - OPTION A
 - GitHub Action taeglich: `download_to_drive.py` + `extract_timeseries.py`, Parquets auto-committen.
