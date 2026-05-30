@@ -31,7 +31,6 @@ from pathlib import Path
 import earthaccess
 import numpy as np
 import rasterio
-from rasterio.warp import transform as warp_transform
 import rioxarray as rxr
 from dotenv import load_dotenv
 from pydrive2.auth import GoogleAuth
@@ -144,35 +143,18 @@ def upload_bytes_to_drive(drive: GoogleDrive, data: bytes, filename: str, folder
 
 
 # ─────────────────────────────────────────────
-# QUALITY FILTER
-# ─────────────────────────────────────────────
-
-def reservoir_is_covered(data: bytes, aoi: dict) -> bool:
-    """Reservoir center point must be within raster bounds and not NoData."""
-    res_lon, res_lat = aoi["reservoir_point"]
-    with rasterio.open(io.BytesIO(data)) as src:
-        if src.crs and not src.crs.is_geographic:
-            xs, ys = warp_transform("EPSG:4326", src.crs, [res_lon], [res_lat])
-            res_x, res_y = xs[0], ys[0]
-        else:
-            res_x, res_y = res_lon, res_lat
-
-        b = src.bounds
-        if not (b.left <= res_x <= b.right and b.bottom <= res_y <= b.top):
-            return False
-        row, col = src.index(res_x, res_y)
-        if not (0 <= row < src.height and 0 <= col < src.width):
-            return False
-        return src.read(1)[row, col] != NODATA
-
-
-# ─────────────────────────────────────────────
 # DATA PROCESSING
 # ─────────────────────────────────────────────
 
 def extract_date_from_filename(filename: str) -> str:
     m = re.search(r"_(\d{8})T", filename)
     return m.group(1) if m else "unknown"
+
+
+def extract_tile_id(filename: str) -> str:
+    """MGRS tile ID, e.g. T37TGH. Needed so multiple tiles per date don't collide."""
+    m = re.search(r"_(T\d{2}[A-Z]{3})_", filename)
+    return m.group(1) if m else "TXXXXX"
 
 
 def extract_layer(filename: str, layers: list[str]) -> str | None:
@@ -245,7 +227,9 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
             if not layer:
                 continue
             date_str = extract_date_from_filename(fname)
-            out_name = f"{aoi['name']}_{date_str}_{layer}_clipped.tif"
+            tile_id  = extract_tile_id(fname)
+            # MGRS tile in name so multiple tiles per date coexist (needed for mosaic)
+            out_name = f"{aoi['name']}_{date_str}_{tile_id}_{layer}_clipped.tif"
             if out_name not in existing:
                 urls_to_process.append((link, out_name, layer))
 
@@ -269,11 +253,9 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
                 skipped_filter += 1
                 continue
 
-            # Only check reservoir coverage for B01_WTR
-            if layer == "B01_WTR" and not reservoir_is_covered(data, aoi):
-                skipped_filter += 1
-                continue
-
+            # No reservoir filter: we download ALL tiles covering the AOI so the
+            # northern glacier tiles are included. Full-AOI coverage + quality
+            # filtering happens later in extract_timeseries.py on the mosaic.
             upload_bytes_to_drive(drive, data, out_name, aoi_id)
             uploaded += 1
 
@@ -287,7 +269,7 @@ def main():
     print("FROM SNOW TO RESERVOIR - Download to Google Drive")
     print(f"Period   : {DATE_START} -> {DATE_END}")
     print(f"Products : {', '.join(c['short_name'] for c in COLLECTIONS)}")
-    print(f"Filter   : reservoir center point must be covered")
+    print(f"Coverage : full AOI (all tiles, MGRS-tagged filenames)")
     print(f"Retries  : {MAX_RETRIES} attempts with exponential backoff")
     print("=" * 60)
 
@@ -310,7 +292,6 @@ def main():
         print(f"{'='*60}")
         for aoi in [AOI_1, AOI_2]:
             print(f"\nAOI: {aoi['label']}")
-            print(f"  Reservoir: {aoi['reservoir_point']}")
             process_aoi(aoi, collection, drive)
 
     print("\nDone. Data available in Google Drive.")
