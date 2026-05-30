@@ -68,7 +68,8 @@ Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Geor
 - ANGEREICHERTE Version: `B01_WTR` (Mosaik) pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
   Wasser (1-5) = blau, saisonaler Schnee = weiss, Schnee-auf-Gletscher = hellblau, blankes Gletschereis = tuerkis/grau.
 - Als Folium `ImageOverlay` auf die Karte legen; Datums-Auswahl steuert das gezeigte Raster.
-- Zu loesen: UTM->Lat/Lon Reprojektion, Caching pro Datum (Drive-Load langsam), evtl. vorgerenderte PNG-Overlays fuer fluessiges Durchblaettern.
+
+**Implementierungs-Ansatz (Stabilitaet):** Vorrendern statt live rechnen. Ein separates `render_overlays.py` (laeuft einmal nach `extract_timeseries.py`) erzeugt pro gefiltertem Datum ein kleines, eingefaerbtes PNG nach `static_data/overlays/{aoi}/{date}.png` (+ Bounds-Sidecar). Die App laedt nur fertige PNGs via `folium.ImageOverlay` - kein Rasterrechnen zur Laufzeit, stabil und fluessig durchblaetterbar. Hebel: Aufloesung reduzieren, nur gefilterte Tage rendern, `@st.cache_data`, batch-weise mit Speicherfreigabe, PNGs lokal (kein Drive-Zugriff zur Laufzeit).
 
 ### GEPLANT: Reservoir-Wasserflaeche + Wasserpegel
 - `download_reservoirs.py` liefert exakte Stausee-Polygone (HydroLAKES) -> `static_data/reservoirs.geojson` (fertig).
