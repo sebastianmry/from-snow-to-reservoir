@@ -5,3 +5,12 @@ pydrive2
 tqdm
 python-dotenv
 numpy
+pandas
+pyarrow
+geopandas
+shapely
+requests
+streamlit
+plotly
+folium
+streamlit-folium

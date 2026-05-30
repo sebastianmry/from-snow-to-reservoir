@@ -1,48 +1,140 @@
 """
-Extract water area time series from OPERA DSWx-S1 B01_WTR GeoTIFFs in Google Drive.
+FROM SNOW TO RESERVOIR - Time Series Extraction
+Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
 
-OPERA DSWx-S1 B01_WTR pixel values:
-    0   = Not water
-    1   = Open water
-    3   = Inundated vegetation
-    250 = HAND masked (Height Above Nearest Drainage)
-    251 = Layover/shadow masked (SAR artefact)
-    254 = Ocean masked
-    255 = NoData
+Reads clipped GeoTIFFs from Google Drive and computes per-date area statistics.
+Requires RGI v7 Region 12 shapefile in static_data/ for glacier stats.
+Run download_glaciers.py first to fetch the shapefile.
 
-Note: Snow/Ice is NOT in B01_WTR for DSWx-S1 (SAR-based). Snow requires B03_BWTR layer.
+DSWx pixel values:
+  B01_WTR (S1 + HLS):  1-5=water, 252=snow/ice, 255=NoData
+  B09_CLOUD (HLS):     3=cloud shadow, 4=cloud, 255=NoData
 
-Output: CSV per site with columns: date, open_water_km2, inundated_veg_km2, hand_masked_km2, layover_km2, valid_px_pct
+Output per AOI:
+  {site}_s1_timeseries.csv/.parquet   - water area from DSWx-S1
+  {site}_hls_timeseries.csv/.parquet  - water + snow + glacier stats from DSWx-HLS
 
 Usage:
+    python download_glaciers.py   # once, to fetch RGI shapefile
     python extract_timeseries.py
 """
 
 import io
 import re
 import csv
+import time
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import rasterio
+from rasterio.features import rasterize
+from rasterio.warp import transform as warp_transform
+import geopandas as gpd
+from shapely.geometry import box
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 
-FOLDER_ID = "1EdYn2RbULuEYj8dnPbK9Zshia6G50ssE"
-NODATA = 255
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+    print("pandas not installed - parquet output disabled")
 
-PIXEL_VALUES = {
-    "not_water":        0,
-    "open_water":       1,
-    "inundated_veg":    3,
-    "hand_masked":      250,
-    "layover":          251,
-    "ocean":            254,
+# ─────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────
+
+DRIVE_ROOT_FOLDER_ID = "1EdYn2RbULuEYj8dnPbK9Zshia6G50ssE"
+
+AOI_1 = {
+    "name": "enguri",
+    "label": "Enguri Talsperre + Svaneti",
+    "clip_box": (41.70, 42.55, 42.80, 43.15),   # (min_lon, min_lat, max_lon, max_lat)
 }
 
-OUTPUT_DIR = Path(".")
+AOI_2 = {
+    "name": "zhinvali",
+    "label": "Zhinvali Talsperre + Gergeti",
+    "clip_box": (44.30, 42.00, 45.15, 42.80),
+}
 
+NODATA         = 255
+WATER_VALUES   = {1, 2, 3, 4, 5}
+SNOW_VALUE     = 252
+CLOUD_VALUES   = {3, 4}
+MAX_CLOUD_PCT  = 30.0
+MIN_VALID_PCT  = 80.0  # skip scenes where less than 80% of AOI pixels are valid (not NoData)
+
+STATIC_DIR = Path("static_data")
+OUTPUT_DIR = Path(".")
+SITES      = ["enguri", "zhinvali"]
+
+RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
+
+
+# ─────────────────────────────────────────────
+# RGI LOOKUP (download via download_glaciers.py)
+# ─────────────────────────────────────────────
+
+def find_rgi() -> Path | None:
+    """Look for RGI shapefile in static_data/. Run download_glaciers.py to fetch it."""
+    existing = list(STATIC_DIR.rglob(RGI_SHP_GLOB))
+    if existing:
+        print(f"  RGI shapefile found: {existing[0]}")
+        return existing[0]
+    print("  RGI shapefile not found. Run download_glaciers.py first.")
+    print("  Continuing without glacier stats.")
+    return None
+
+
+def load_glacier_mask(shp_path: Path, clip_box: tuple) -> gpd.GeoDataFrame | None:
+    """Load RGI glaciers clipped to AOI bounding box."""
+    min_lon, min_lat, max_lon, max_lat = clip_box
+    try:
+        gdf = gpd.read_file(shp_path, bbox=(min_lon, min_lat, max_lon, max_lat))
+        if gdf.empty:
+            print(f"  No glaciers found in AOI {clip_box}")
+            return None
+        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        print(f"  {len(gdf)} glacier polygons loaded for AOI")
+        return gdf
+    except Exception as e:
+        print(f"  ERROR loading RGI: {e}")
+        return None
+
+
+def rasterize_glaciers(glaciers: gpd.GeoDataFrame, src_crs, transform, shape: tuple) -> np.ndarray:
+    """Rasterize glacier polygons to match a raster's grid. Returns boolean mask."""
+    if glaciers is None or glaciers.empty:
+        return np.zeros(shape, dtype=bool)
+
+    # Reproject to raster CRS if needed
+    raster_epsg = src_crs.to_epsg() if src_crs else 4326
+    if raster_epsg and raster_epsg != 4326:
+        gdf_proj = glaciers.to_crs(f"EPSG:{raster_epsg}")
+    else:
+        gdf_proj = glaciers
+
+    geoms = [geom for geom in gdf_proj.geometry if geom is not None and geom.is_valid]
+    if not geoms:
+        return np.zeros(shape, dtype=bool)
+
+    mask = rasterize(
+        [(geom, 1) for geom in geoms],
+        out_shape=shape,
+        transform=transform,
+        fill=0,
+        dtype=np.uint8,
+    )
+    return mask.astype(bool)
+
+
+# ─────────────────────────────────────────────
+# AUTH
+# ─────────────────────────────────────────────
 
 def authenticate() -> GoogleDrive:
     gauth = GoogleAuth()
@@ -57,97 +149,271 @@ def authenticate() -> GoogleDrive:
     return GoogleDrive(gauth)
 
 
-def list_files_in_folder(drive: GoogleDrive, folder_id: str) -> list[dict]:
-    results = []
-    entries = drive.ListFile(
-        {"q": f"'{folder_id}' in parents and trashed=false"}
+# ─────────────────────────────────────────────
+# DRIVE HELPERS
+# ─────────────────────────────────────────────
+
+def get_folder_id(drive: GoogleDrive, name: str, parent_id: str) -> str | None:
+    query = (
+        f"title='{name}' and mimeType='application/vnd.google-apps.folder' "
+        f"and '{parent_id}' in parents and trashed=false"
+    )
+    results = drive.ListFile({"q": query}).GetList()
+    return results[0]["id"] if results else None
+
+
+def list_tifs_in_folder(drive: GoogleDrive, folder_id: str) -> list[dict]:
+    return drive.ListFile(
+        {"q": f"'{folder_id}' in parents and trashed=false and title contains '.tif'"}
     ).GetList()
-    for entry in entries:
-        if entry["mimeType"] == "application/vnd.google-apps.folder":
-            results.extend(list_files_in_folder(drive, entry["id"]))
-        elif entry["title"].endswith(".tif"):
-            results.append(entry)
-    return results
 
 
-def compute_areas(drive_file) -> dict | None:
-    """Read TIF in-memory and compute area in km2 per class."""
-    content = drive_file.GetContentIOBuffer()
-    data_bytes = io.BytesIO(content.read())
+def read_bytes(drive_file) -> bytes:
+    return drive_file.GetContentIOBuffer().read()
 
-    with rasterio.open(data_bytes) as src:
+
+# ─────────────────────────────────────────────
+# PIXEL ANALYSIS
+# ─────────────────────────────────────────────
+
+def pixel_size_km2(src) -> float:
+    res_x = abs(src.transform.a)
+    res_y = abs(src.transform.e)
+    if src.crs and src.crs.is_geographic:
+        center_lat = (src.bounds.top + src.bounds.bottom) / 2
+        return (res_x * 111.32 * np.cos(np.radians(center_lat))) * (res_y * 110.574)
+    return (res_x * res_y) / 1e6
+
+
+def extract_s1_stats(data: bytes) -> dict:
+    """Water area from DSWx-S1 B01_WTR."""
+    with rasterio.open(io.BytesIO(data)) as src:
         arr = src.read(1)
-        res_x = abs(src.transform.a)
-        res_y = abs(src.transform.e)
-        if src.crs and src.crs.is_geographic:
-            # CRS in degrees -> convert to km using center latitude
-            center_lat = (src.bounds.top + src.bounds.bottom) / 2
-            lat_rad = np.radians(center_lat)
-            px_km2 = (res_x * 111.32 * np.cos(lat_rad)) * (res_y * 110.574)
-        else:
-            # CRS in meters (e.g. UTM) -> convert m2 to km2
-            px_km2 = (res_x * res_y) / 1e6
-
-    valid_mask = arr != NODATA
-    total_valid = int(np.sum(valid_mask))
-    total_px = arr.size
-
+        px  = pixel_size_km2(src)
+    valid = arr != NODATA
     return {
-        "open_water_km2":    float(np.sum(arr == PIXEL_VALUES["open_water"]) * px_km2),
-        "inundated_veg_km2": float(np.sum(arr == PIXEL_VALUES["inundated_veg"]) * px_km2),
-        "hand_masked_km2":   float(np.sum(arr == PIXEL_VALUES["hand_masked"]) * px_km2),
-        "layover_km2":       float(np.sum(arr == PIXEL_VALUES["layover"]) * px_km2),
-        "valid_px_pct":      round(total_valid / total_px * 100, 2),
+        "water_km2":    float(np.sum(np.isin(arr, list(WATER_VALUES))) * px),
+        "valid_px_pct": round(float(np.sum(valid)) / arr.size * 100, 2),
     }
 
 
-def parse_metadata(filename: str) -> tuple[str, str] | None:
-    """Extract (site, date) from filename like enguri_20240822_B01_WTR_clipped.tif"""
-    m = re.match(r"(enguri|zhinvali)_(\d{8})_", filename)
+def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
+                      glaciers: gpd.GeoDataFrame | None) -> dict | None:
+    """
+    Water + snow/glacier stats from DSWx-HLS B01_WTR with cloud masking.
+    Returns None if cloud cover > MAX_CLOUD_PCT.
+    """
+    with rasterio.open(io.BytesIO(wtr_data)) as src:
+        wtr       = src.read(1)
+        px        = pixel_size_km2(src)
+        raster_crs = src.crs
+        transform  = src.transform
+        shape      = wtr.shape
+
+    valid = wtr != NODATA
+    cloud = np.zeros_like(wtr, dtype=bool)
+
+    if cloud_data is not None:
+        with rasterio.open(io.BytesIO(cloud_data)) as src:
+            cloud_arr = src.read(1)
+            # If WTR and CLOUD come from different MGRS tiles (shape mismatch),
+            # reproject CLOUD onto the WTR grid so array operations work correctly.
+            if cloud_arr.shape != wtr.shape:
+                from rasterio.warp import reproject, Resampling
+                cloud_reproj = np.zeros(shape, dtype=cloud_arr.dtype)
+                reproject(
+                    source=cloud_arr,
+                    destination=cloud_reproj,
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=raster_crs,
+                    resampling=Resampling.nearest,
+                )
+                cloud_arr = cloud_reproj
+        cloud = np.isin(cloud_arr, list(CLOUD_VALUES))
+
+    n_valid = int(np.sum(valid))
+    valid_pct = float(n_valid) / wtr.size * 100
+    cloud_pct = float(np.sum(cloud & valid)) / max(n_valid, 1) * 100
+
+    if valid_pct < MIN_VALID_PCT:
+        return None
+
+    if cloud_pct > MAX_CLOUD_PCT:
+        return None
+
+    usable      = valid & ~cloud
+    water_mask  = np.isin(wtr, list(WATER_VALUES)) & usable
+    snow_mask   = (wtr == SNOW_VALUE) & usable
+
+    # Glacier rasterization
+    glacier_mask = rasterize_glaciers(glaciers, raster_crs, transform, shape)
+
+    snow_on_glacier  = snow_mask & glacier_mask
+    snow_seasonal    = snow_mask & ~glacier_mask
+    glacier_total_km2 = float(np.sum(glacier_mask & usable) * px)
+    bare_ice_km2      = max(0.0, glacier_total_km2 - float(np.sum(snow_on_glacier) * px))
+
+    return {
+        "water_area_km2":      float(np.sum(water_mask) * px),
+        "seasonal_snow_km2":   float(np.sum(snow_seasonal) * px),
+        "snow_on_glacier_km2": float(np.sum(snow_on_glacier) * px),
+        "bare_ice_km2":        bare_ice_km2,
+        "glacier_total_km2":   glacier_total_km2,
+        "cloud_cover_percent": round(cloud_pct, 2),
+        "valid_px_pct":        round(float(n_valid) / wtr.size * 100, 2),
+    }
+
+
+# ─────────────────────────────────────────────
+# OUTPUT
+# ─────────────────────────────────────────────
+
+def save_outputs(rows: list[dict], fieldnames: list[str], stem: str):
+    rows.sort(key=lambda r: r["date"])
+    csv_path = OUTPUT_DIR / f"{stem}.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"  Saved: {csv_path} ({len(rows)} rows)")
+
+    if HAS_PANDAS:
+        df = pd.DataFrame(rows)[fieldnames]
+        df["date"] = pd.to_datetime(df["date"])
+        pq_path = OUTPUT_DIR / f"{stem}.parquet"
+        df.to_parquet(pq_path, index=False)
+        print(f"  Saved: {pq_path}")
+
+
+def parse_filename(title: str) -> tuple[str, str, str] | None:
+    m = re.match(r"(enguri|zhinvali)_(\d{8})_(B\d+[\w\-]+?)_clipped\.tif", title)
     if not m:
         return None
-    return m.group(1), m.group(2)
+    return m.group(1), m.group(2), m.group(3)
 
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
 
 def main():
     print("Authenticating with Google Drive...")
     drive = authenticate()
 
-    print("Listing TIF files...")
-    all_files = list_files_in_folder(drive, FOLDER_ID)
-    print(f"Found {len(all_files)} files\n")
+    # ── RGI glacier data ─────────────────────
+    print("\n--- RGI v7 Glacier Data ---")
+    rgi_shp = find_rgi()
 
-    sites: dict[str, list] = {"enguri": [], "zhinvali": []}
+    glacier_masks: dict[str, gpd.GeoDataFrame | None] = {}
+    for aoi in [AOI_1, AOI_2]:
+        if rgi_shp:
+            print(f"  Loading glaciers for {aoi['name']}...")
+            glacier_masks[aoi["name"]] = load_glacier_mask(rgi_shp, aoi["clip_box"])
+        else:
+            glacier_masks[aoi["name"]] = None
 
-    for i, f in enumerate(all_files, 1):
-        meta = parse_metadata(f["title"])
-        if not meta:
+    # ── DSWx-S1 ──────────────────────────────
+    print("\n--- DSWx-S1 B01_WTR ---")
+    s1_root = get_folder_id(drive, "s1", "root")
+
+    for aoi in [AOI_1, AOI_2]:
+        site = aoi["name"]
+        rows: list[dict] = []
+
+        # Try new structure first, fall back to old
+        site_folder = None
+        if s1_root:
+            site_folder = get_folder_id(drive, site, s1_root)
+        if not site_folder:
+            site_folder = get_folder_id(drive, site, DRIVE_ROOT_FOLDER_ID)
+        if not site_folder:
+            print(f"  Folder not found for {site} (S1)")
             continue
-        site, date_str = meta
-        print(f"[{i:>3}/{len(all_files)}] {f['title']} ... ", end="", flush=True)
 
-        try:
-            areas = compute_areas(f)
-            date = datetime.strptime(date_str, "%Y%m%d").date()
-            row = {"date": date, **areas}
-            sites[site].append(row)
-            print(f"water={areas['open_water_km2']:.2f} km2  veg={areas['inundated_veg_km2']:.2f} km2")
-        except Exception as e:
-            print(f"ERROR: {e}")
+        files = [f for f in list_tifs_in_folder(drive, site_folder)
+                 if "B01_WTR" in f["title"]]
+        print(f"  {site}: {len(files)} B01_WTR files")
 
-    # Write CSVs
-    fieldnames = ["date", "open_water_km2", "inundated_veg_km2", "hand_masked_km2", "layover_km2", "valid_px_pct"]
+        for i, f in enumerate(files, 1):
+            meta = parse_filename(f["title"])
+            if not meta:
+                continue
+            _, date_str, _ = meta
+            print(f"  [{i:>3}/{len(files)}] {f['title']} ...", end=" ", flush=True)
+            try:
+                stats = extract_s1_stats(read_bytes(f))
+                rows.append({"date": datetime.strptime(date_str, "%Y%m%d").date(), **stats})
+                print(f"water={stats['water_km2']:.2f} km2")
+            except Exception as e:
+                print(f"ERROR: {e}")
 
-    for site, rows in sites.items():
-        if not rows:
+        if rows:
+            save_outputs(rows, ["date", "water_km2", "valid_px_pct"],
+                         f"{site}_s1_timeseries")
+
+    # ── DSWx-HLS ─────────────────────────────
+    print("\n--- DSWx-HLS B01_WTR + B09_CLOUD ---")
+    hls_root = get_folder_id(drive, "hls", "root")
+
+    if not hls_root:
+        print("  HLS folder not found - run download_to_drive.py first")
+        return
+
+    for aoi in [AOI_1, AOI_2]:
+        site     = aoi["name"]
+        glaciers = glacier_masks.get(site)
+        rows: list[dict] = []
+
+        site_folder = get_folder_id(drive, site, hls_root)
+        if not site_folder:
+            print(f"  Folder not found for {site} (HLS)")
             continue
-        rows.sort(key=lambda r: r["date"])
-        out_path = OUTPUT_DIR / f"{site}_timeseries.csv"
-        with open(out_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"\nSaved: {out_path} ({len(rows)} rows)")
+
+        files = list_tifs_in_folder(drive, site_folder)
+
+        wtr_by_date:   dict[str, dict] = {}
+        cloud_by_date: dict[str, dict] = {}
+        for f in files:
+            meta = parse_filename(f["title"])
+            if not meta:
+                continue
+            _, date_str, layer = meta
+            if "B01_WTR" in layer:
+                wtr_by_date[date_str] = f
+            elif "B09_CLOUD" in layer:
+                cloud_by_date[date_str] = f
+
+        dates = sorted(wtr_by_date.keys())
+        print(f"  {site}: {len(dates)} WTR dates, {len(cloud_by_date)} CLOUD dates")
+
+        for i, date_str in enumerate(dates, 1):
+            cloud_file = cloud_by_date.get(date_str)
+            print(f"  [{i:>3}/{len(dates)}] {site}_hls_{date_str} ...", end=" ", flush=True)
+            try:
+                wtr_data   = read_bytes(wtr_by_date[date_str])
+                cloud_data = read_bytes(cloud_file) if cloud_file else None
+                stats = extract_hls_stats(wtr_data, cloud_data, glaciers)
+                if stats is None:
+                    print(f"skipped (coverage < {MIN_VALID_PCT}% or cloud > {MAX_CLOUD_PCT}%)")
+                    continue
+                rows.append({"date": datetime.strptime(date_str, "%Y%m%d").date(), **stats})
+                print(f"water={stats['water_area_km2']:.2f}  "
+                      f"snow_seas={stats['seasonal_snow_km2']:.1f}  "
+                      f"snow_glac={stats['snow_on_glacier_km2']:.1f}  "
+                      f"bare_ice={stats['bare_ice_km2']:.1f}  "
+                      f"cloud={stats['cloud_cover_percent']:.0f}%")
+            except Exception as e:
+                print(f"ERROR: {e}")
+
+        if rows:
+            save_outputs(
+                rows,
+                ["date", "water_area_km2", "seasonal_snow_km2", "snow_on_glacier_km2",
+                 "bare_ice_km2", "glacier_total_km2", "cloud_cover_percent", "valid_px_pct"],
+                f"{site}_timeseries",
+            )
 
 
 if __name__ == "__main__":
