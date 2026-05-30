@@ -21,11 +21,16 @@ from pathlib import Path
 
 STATIC_DIR = Path("static_data")
 
-RGI_NSIDC_URL = (
-    "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/"
-    "regional_files/RGI2000-v7.0-G/"
-    "RGI2000-v7.0-G-12_caucasus-middle_east.zip"
-)
+RGI_NSIDC_BASE = "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/"
+RGI_FILENAME   = "RGI2000-v7.0-G-12_caucasus-middle_east.zip"
+
+# Candidate URL paths to try in order
+RGI_URL_CANDIDATES = [
+    RGI_NSIDC_BASE + "regional_files/RGI2000-v7.0-G/" + RGI_FILENAME,
+    RGI_NSIDC_BASE + "RGI2000-v7.0-G/" + RGI_FILENAME,
+    RGI_NSIDC_BASE + "data/" + RGI_FILENAME,
+    RGI_NSIDC_BASE + RGI_FILENAME,
+]
 RGI_ZIP      = STATIC_DIR / "rgi_region12.zip"
 RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
 
@@ -49,13 +54,41 @@ def download_rgi() -> Path | None:
     print(f"Downloading RGI v7 Region 12 from NSIDC...")
     print(f"URL: {RGI_NSIDC_URL}")
 
-    try:
-        # earthaccess.get_requests_https_session() returns a requests.Session
-        # with NASA Earthdata Bearer token - handles NSIDC OAuth redirects correctly
-        session = earthaccess.get_requests_https_session()
-        response = session.get(RGI_NSIDC_URL, stream=True, timeout=300)
-        response.raise_for_status()
+    session = earthaccess.get_requests_https_session()
 
+    # Try candidate URLs until one works
+    working_url = None
+    for url in RGI_URL_CANDIDATES:
+        print(f"  Trying: {url}")
+        try:
+            r = session.head(url, timeout=30, allow_redirects=True)
+            if r.status_code == 200:
+                working_url = url
+                print(f"  Found!")
+                break
+            else:
+                print(f"  -> {r.status_code}")
+        except Exception as e:
+            print(f"  -> ERROR: {e}")
+
+    if not working_url:
+        # Browse base directory to find correct structure
+        print(f"\n  Browsing NSIDC directory to find correct path...")
+        try:
+            r = session.get(RGI_NSIDC_BASE, timeout=30)
+            print(f"  Directory listing ({r.status_code}):")
+            for line in r.text.splitlines():
+                if "RGI" in line or "rgi" in line or "href" in line.lower():
+                    print(f"    {line.strip()}")
+        except Exception as e:
+            print(f"  Could not browse directory: {e}")
+        print("\nERROR: Could not find RGI zip. Check directory listing above.")
+        print("Manual download: https://nsidc.org/data/nsidc-0770/versions/7")
+        return None
+
+    try:
+        response = session.get(working_url, stream=True, timeout=300)
+        response.raise_for_status()
         total = int(response.headers.get("content-length", 0))
         downloaded = 0
         with open(RGI_ZIP, "wb") as out:
@@ -66,9 +99,7 @@ def download_rgi() -> Path | None:
                     print(f"\r  {downloaded / 1e6:.1f} / {total / 1e6:.1f} MB", end="", flush=True)
         print(f"\nDownload complete ({downloaded / 1e6:.1f} MB)")
     except Exception as e:
-        print(f"ERROR downloading RGI: {e}")
-        print("Alternative: download manually from https://nsidc.org/data/nsidc-0770/versions/7")
-        print("             and unpack Region 12 zip into static_data/")
+        print(f"ERROR downloading: {e}")
         return None
 
     print("Unpacking...")
