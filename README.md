@@ -11,19 +11,18 @@ Georgiens Stromversorgung haengt zu etwa 80 % von der Wasserkraft ab. Saisonale 
 
 ## Areas of Interest
 
-| AOI | Bbox (W, S, E, N) | Groesse | Objekte |
-|-----|-------------------|---------|---------|
-| Enguri | 41.70, 42.55, 42.70, 43.05 | ~4 500 km² | Enguri Dam (271 m), Shkhara-Gletscher (5 193 m), grenzt an Abchasien |
-| Zhinvali | 44.55, 42.00, 45.10, 42.55 | ~2 750 km² | Zhinvali Dam (Trinkwasser Tbilisi), Gergeti/Kazbek (5 047 m), grenzt an Suedossetien |
+| AOI | Bbox (min_lon, min_lat, max_lon, max_lat) | Objekte |
+|-----|------------------------------------------|---------|
+| Enguri | 41.70, 42.55, 42.80, 43.15 | Enguri Dam (271 m), starke Vergletscherung rund um Mestia, grenzt an Abchasien |
+| Zhinvali | 44.30, 42.00, 45.15, 42.80 | Zhinvali Dam (Trinkwasser Tbilisi), Gergeti-Gletscher / Kazbek (5 047 m), grenzt an Suedossetien |
 
 ## Daten
 
-- **OPERA DSWx-S1 (Level-3):** Wasserklassifikation (B01_WTR) via NASA earthaccess, ~6-Tage Revisit
-- **OPERA DSWx-HLS (Level-3):** Schnee/Eis Klassifikation (B03_SNOW) aus Landsat-8/Sentinel-2
-- **Copernicus DEM GLO-30:** 30 m Hoehenmodell, hypsometrische Volumenberechnung
-- **Randolph Glacier Inventory v7 (RGI):** Gletscher-Polygone, Volume-Area Scaling
+- **OPERA DSWx-HLS (Level-3):** Wasserklassifikation (B01_WTR) + Wolkenmaske (B09_CLOUD) aus Landsat-8/9 und Sentinel-2, ~2-3 Tage Revisit
+- **OPERA DSWx-S1 (Level-3):** Radar-basierte Wasserklassifikation (B01_WTR), ~6-Tage Revisit *(temporaer pausiert)*
+- **Randolph Glacier Inventory v7 (RGI), Region 12:** Gletscher-Polygone fuer den Kaukasus (automatischer Download)
 
-Zeitraum: August 2024 bis heute (live, automatisch aktualisiert)
+Zeitraum: August 2024 bis heute
 
 ## Pipeline
 
@@ -31,16 +30,33 @@ Zeitraum: August 2024 bis heute (live, automatisch aktualisiert)
 NASA Earthdata (earthaccess)
         |
         v
-download_to_drive.py        # Clip auf AOI, Coverage-Filter >= 90%, Upload nach Google Drive
-        |                   # DSWx-S1 B01_WTR (Wasser) + DSWx-HLS B03_SNOW (Schnee/Eis)
+download_to_drive.py     # In-Memory Clip auf AOI, Resume-Logik, Upload nach Google Drive
+        |                # DSWx-HLS: B01_WTR (Wasser/Schnee) + B09_CLOUD (Wolken)
         v
-extract_timeseries.py       # Flaechenberechnung pro Klasse -> CSV Zeitreihen
-        |
+extract_timeseries.py    # Raster-Vektor-Verschneidung mit RGI-Gletscherpolygonen
+        |                # Qualitaetsfilter: >= 80% AOI-Abdeckung, <= 30% Bewoelkung
         v
-Streamlit App               # Zeitreihen, Karte, AI-Report (in Entwicklung)
+Streamlit App            # Zeitreihen, Karte, Gletscherstatistiken (in Entwicklung)
 ```
 
-`filter_tiffs_by_coverage.py` steht zusaetzlich fuer manuelle Nachbereinigung bestehender Drive-Ordner zur Verfuegung.
+## Qualitaetsfilter
+
+| Filter | Schwellenwert | Begruendung |
+|--------|--------------|-------------|
+| AOI-Abdeckung | >= 80% valide Pixel | Verwirft MGRS-Randkacheln ohne vollstaendige Gebietsabdeckung |
+| Bewoelkung | <= 30% Wolken im AOI | Wissenschaftlich gaengiger Grenzwert fuer optische Fernerkundung |
+
+## Berechnete Metriken (pro Datum und AOI)
+
+| Spalte | Beschreibung |
+|--------|-------------|
+| `water_area_km2` | Offene Wasserflaeche im Stausee (DSWx-Klassen 1-5) |
+| `seasonal_snow_km2` | Schneebedeckung ausserhalb der RGI-Gletscherpolygone |
+| `snow_on_glacier_km2` | Schneebedeckung innerhalb der RGI-Gletscherpolygone |
+| `bare_ice_km2` | Blankes Gletschereis (Gletscherflaeche minus Schneebdeckung) |
+| `glacier_total_km2` | Gesamtflaeche der RGI-Polygone im AOI |
+| `cloud_cover_percent` | Anteil bewoelkter Pixel im AOI |
+| `valid_px_pct` | Anteil valider (nicht-NoData) Pixel im AOI |
 
 ## Setup
 
@@ -60,38 +76,31 @@ NASA Earthdata Login:
 ## Skripte
 
 ### `download_to_drive.py`
-Laedt OPERA DSWx-S1 (B01_WTR) und DSWx-HLS (B03_SNOW) Granules direkt aus NASA, clippt auf AOI-Bboxen und laedt nach Google Drive hoch. Eingebauter Coverage-Filter (>= 90% valide Pixel) verwirft MGRS-Randkacheln direkt beim Download.
+Sucht OPERA DSWx-HLS Granules via NASA earthaccess, clippt sie in-memory auf die AOI-Bboxen und laedt sie nach Google Drive hoch. Resume-Logik ueberspringt bereits vorhandene Dateien anhand des Dateinamens.
 
 ```bash
+cd "Pfad/zum/Projektordner"
 python download_to_drive.py
 ```
 
 ### `extract_timeseries.py`
-Liest alle GeoTIFFs aus Google Drive in-memory, berechnet Flaechenanteile pro Pixelklasse (Open Water, Inundated Vegetation, etc.) und speichert Zeitreihen als CSV.
+Laedt RGI v7 Gletscherdaten automatisch herunter (Zenodo), liest alle GeoTIFFs aus Google Drive in-memory, verschneidet Raster- mit Vektordaten und speichert Zeitreihen pro AOI.
 
 ```bash
 python extract_timeseries.py
 ```
 
-### `filter_tiffs_by_coverage.py`
-Nachtraeglicher Coverage-Filter fuer bestehende Drive-Ordner. Berechnet Anteil valider Pixel und loescht Dateien unterhalb des Schwellenwerts.
+Output: `enguri_timeseries.csv/.parquet`, `zhinvali_timeseries.csv/.parquet`
 
-```bash
-python filter_tiffs_by_coverage.py --threshold 90 --folder-id <FOLDER_ID>
-# Dry-Run (keine Loeschung):
-python filter_tiffs_by_coverage.py --threshold 90 --folder-id <FOLDER_ID> --dry-run
-```
+## Aktueller Datenstand (Mai 2026)
 
-## Aktueller Datenstand
-
-- **Enguri (DSWx-S1):** 104 Aufnahmen (Aug 2024 – Mai 2026), ~6-Tage Revisit, >= 99% Coverage
-- **Zhinvali (DSWx-S1):** 99 Aufnahmen (Aug 2024 – Mai 2026), ~6-Tage Revisit, >= 99% Coverage
-- **DSWx-HLS B03_SNOW:** Download laufend
-- Coverage-Filter: >= 90% valide Pixel
+- **DSWx-HLS Enguri:** Download laufend (~860 Granules, Aug 2024 - Mai 2026)
+- **DSWx-HLS Zhinvali:** Download ausstehend
+- **DSWx-S1:** Temporaer deaktiviert, wird nach Abschluss des HLS-Downloads fortgesetzt
 
 ## Tech Stack
 
-Python 3.11 | earthaccess | rasterio | rioxarray | xarray | geopandas | scipy | numpy | pydrive2 | streamlit | plotly | anthropic SDK | GitHub | Streamlit Cloud
+Python 3.11 | earthaccess | rasterio | rioxarray | geopandas | pydrive2 | pandas | pyarrow | tqdm | streamlit | plotly | GitHub
 
 ## Lizenz
 
