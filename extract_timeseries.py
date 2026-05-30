@@ -71,15 +71,12 @@ STATIC_DIR = Path("static_data")
 OUTPUT_DIR = Path(".")
 SITES      = ["enguri", "zhinvali"]
 
-# RGI v7 Region 12 (Caucasus and Middle East)
-# Auto-download disabled - URL changed. Manual download instructions:
-#   1. Go to https://nsidc.org/data/nsidc-0770/versions/7
-#   2. Download Region 12 (Caucasus and Middle East) zip file
-#   3. Unpack into static_data/
-# Script continues without glacier stats if shapefile is missing.
-RGI_URL      = None  # disabled until correct URL is found
-RGI_ZIP      = STATIC_DIR / "rgi_region12.zip"
-RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
+# RGI v7 Region 12 (Caucasus and Middle East) - NSIDC-0770 via earthaccess
+RGI_SHORT_NAME = "NSIDC-0770"
+RGI_VERSION    = "7"
+RGI_FILENAME   = "RGI2000-v7.0-G-12_caucasus-middle_east.zip"
+RGI_ZIP        = STATIC_DIR / "rgi_region12.zip"
+RGI_SHP_GLOB   = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
 
 
 # ─────────────────────────────────────────────
@@ -87,7 +84,9 @@ RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
 # ─────────────────────────────────────────────
 
 def ensure_rgi() -> Path | None:
-    """Download and unpack RGI v7 Region 12 if not already present."""
+    """Download and unpack RGI v7 Region 12 via earthaccess (NSIDC-0770) if not present.
+    Uses the existing NASA Earthdata login so no separate credentials are needed.
+    """
     STATIC_DIR.mkdir(exist_ok=True)
 
     existing = list(STATIC_DIR.rglob(RGI_SHP_GLOB))
@@ -95,38 +94,47 @@ def ensure_rgi() -> Path | None:
         print(f"  RGI shapefile found: {existing[0]}")
         return existing[0]
 
-    if RGI_URL is None:
-        print("  Auto-download disabled. Manual download required:")
-        print("  -> https://nsidc.org/data/nsidc-0770/versions/7")
-        print("  -> Download Region 12, unpack into static_data/")
-        print("  Continuing without glacier stats.")
+    print(f"  RGI shapefile not found. Searching NSIDC via earthaccess...")
+    try:
+        results = earthaccess.search_data(
+            short_name=RGI_SHORT_NAME,
+            version=RGI_VERSION,
+            count=200,
+        )
+    except Exception as e:
+        print(f"  ERROR searching NSIDC-0770: {e}")
         return None
 
-    print(f"  RGI shapefile not found. Downloading...")
-    print(f"  URL: {RGI_URL}")
+    if not results:
+        print("  ERROR: No results found for NSIDC-0770 v7.")
+        return None
 
-    for attempt in range(3):
-        try:
-            resp = requests.get(RGI_URL, stream=True, timeout=120)
-            resp.raise_for_status()
-            total = int(resp.headers.get("content-length", 0))
-            downloaded = 0
-            with open(RGI_ZIP, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded / total * 100
-                        print(f"\r  Downloading... {pct:.1f}%", end="", flush=True)
-            print(f"\r  Download complete ({downloaded / 1e6:.1f} MB)     ")
+    # Find the Region 12 granule by filename
+    target_url = None
+    for granule in results:
+        for link in granule.data_links():
+            if RGI_FILENAME in link:
+                target_url = link
+                break
+        if target_url:
             break
-        except Exception as e:
-            print(f"\n  Attempt {attempt + 1}/3 failed: {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-            else:
-                print("  ERROR: Could not download RGI. Glacier stats will be skipped.")
-                return None
+
+    if not target_url:
+        print(f"  ERROR: Could not find {RGI_FILENAME} in NSIDC-0770 granules.")
+        print(f"  Found {len(results)} granules - check dataset version.")
+        return None
+
+    print(f"  Downloading {RGI_FILENAME}...")
+    try:
+        fs = earthaccess.get_fsspec_https_session()
+        with fs.open(target_url) as f:
+            data = f.read()
+        with open(RGI_ZIP, "wb") as out:
+            out.write(data)
+        print(f"  Download complete ({len(data) / 1e6:.1f} MB)")
+    except Exception as e:
+        print(f"  ERROR downloading RGI: {e}")
+        return None
 
     print("  Unpacking...")
     with zipfile.ZipFile(RGI_ZIP, "r") as zf:
@@ -352,7 +360,15 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
 # ─────────────────────────────────────────────
 
 def main():
-    print("Authenticating with Google Drive...")
+    print("NASA Earthdata Login...")
+    try:
+        earthaccess.login(strategy="netrc")
+    except Exception:
+        print("  No _netrc found - enter credentials:")
+        earthaccess.login(strategy="interactive", persist=True)
+    print("NASA Login OK")
+
+    print("\nAuthenticating with Google Drive...")
     drive = authenticate()
 
     # ── RGI glacier data ─────────────────────
