@@ -48,7 +48,8 @@ except ImportError:
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-DRIVE_ROOT_FOLDER_ID = "1EdYn2RbULuEYj8dnPbK9Zshia6G50ssE"
+# Parent folder in Google Drive holding the hls/ and s1/ subfolders
+DRIVE_PARENT = "OPERA_DSWx"
 
 AOI_1 = {
     "name": "enguri",
@@ -347,22 +348,23 @@ def main():
         else:
             glacier_masks[aoi["name"]] = None
 
+    # Parent OPERA_DSWx folder holding hls/ and s1/
+    opera_root = get_folder_id(drive, DRIVE_PARENT, "root")
+    if not opera_root:
+        print(f"  '{DRIVE_PARENT}' folder not found - run download_hls.py / download_s1.py first")
+        return
+
     # ── DSWx-S1 ──────────────────────────────
     print("\n--- DSWx-S1 B01_WTR ---")
-    s1_root = get_folder_id(drive, "s1", "root")
+    s1_root = get_folder_id(drive, "s1", opera_root)
 
     for aoi in [AOI_1, AOI_2]:
         site = aoi["name"]
         rows: list[dict] = []
 
-        # Try new structure first, fall back to old
-        site_folder = None
-        if s1_root:
-            site_folder = get_folder_id(drive, site, s1_root)
+        site_folder = get_folder_id(drive, site, s1_root) if s1_root else None
         if not site_folder:
-            site_folder = get_folder_id(drive, site, DRIVE_ROOT_FOLDER_ID)
-        if not site_folder:
-            print(f"  Folder not found for {site} (S1)")
+            print(f"  Folder not found for {site} (S1) - skipping")
             continue
 
         files = [f for f in list_tifs_in_folder(drive, site_folder)
@@ -388,10 +390,10 @@ def main():
 
     # ── DSWx-HLS ─────────────────────────────
     print("\n--- DSWx-HLS B01_WTR + B09_CLOUD ---")
-    hls_root = get_folder_id(drive, "hls", "root")
+    hls_root = get_folder_id(drive, "hls", opera_root)
 
     if not hls_root:
-        print("  HLS folder not found - run download_to_drive.py first")
+        print("  HLS folder not found - run download_hls.py first")
         return
 
     for aoi in [AOI_1, AOI_2]:
