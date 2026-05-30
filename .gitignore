@@ -19,7 +19,9 @@ env/
 
 # Data / Output (zu groß für GitHub)
 data/
+static_data/
 *.csv
+*.parquet
 
 # Jupyter
 .ipynb_checkpoints/
