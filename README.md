@@ -97,8 +97,6 @@ python extract_timeseries.py    # Mosaik + Zeitreihen -> *_timeseries.parquet
 streamlit run app.py
 ```
 
-`cleanup_drive.py` entfernt bei Bedarf alte HLS-Dateien ohne MGRS-Kachel-ID aus dem Drive (Dry-Run ohne Argument, `--delete` zum Anwenden).
-
 ## Skripte
 
 | Skript | Funktion |
@@ -108,7 +106,6 @@ streamlit run app.py
 | `download_glaciers.py` | RGI v7 Region 12 Gletscherpolygone von NSIDC laden (via earthaccess) |
 | `download_rivers.py` | HydroRIVERS laden, auf Einzugsgebiet oberhalb des Staudamms filtern (Fliessnetz-Topologie), auf AOI clippen |
 | `app.py` | Streamlit-Dashboard: Folium-Karte (AOI, Gletscher, Fluesse, Staudamm) + Plotly-Zeitreihen |
-| `cleanup_drive.py` | Alte HLS-Dateien ohne MGRS-ID aus dem Drive entfernen |
 
 ## Tech Stack
 
