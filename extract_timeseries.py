@@ -17,6 +17,7 @@ Usage:
     python extract_timeseries.py
 """
 
+import earthaccess
 import io
 import re
 import csv
