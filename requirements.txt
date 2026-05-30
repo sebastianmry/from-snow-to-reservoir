@@ -10,3 +10,7 @@ pyarrow
 geopandas
 shapely
 requests
+streamlit
+plotly
+folium
+streamlit-folium
