@@ -71,8 +71,13 @@ STATIC_DIR = Path("static_data")
 OUTPUT_DIR = Path(".")
 SITES      = ["enguri", "zhinvali"]
 
-# RGI v7 Region 12 (Caucasus and Middle East) - Zenodo public download
-RGI_URL      = "https://zenodo.org/records/8369573/files/RGI2000-v7.0-G-12_caucasus-middle_east.zip?download=1"
+# RGI v7 Region 12 (Caucasus and Middle East)
+# Auto-download disabled - URL changed. Manual download instructions:
+#   1. Go to https://nsidc.org/data/nsidc-0770/versions/7
+#   2. Download Region 12 (Caucasus and Middle East) zip file
+#   3. Unpack into static_data/
+# Script continues without glacier stats if shapefile is missing.
+RGI_URL      = None  # disabled until correct URL is found
 RGI_ZIP      = STATIC_DIR / "rgi_region12.zip"
 RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
 
@@ -90,7 +95,14 @@ def ensure_rgi() -> Path | None:
         print(f"  RGI shapefile found: {existing[0]}")
         return existing[0]
 
-    print(f"  RGI shapefile not found. Downloading from Zenodo...")
+    if RGI_URL is None:
+        print("  Auto-download disabled. Manual download required:")
+        print("  -> https://nsidc.org/data/nsidc-0770/versions/7")
+        print("  -> Download Region 12, unpack into static_data/")
+        print("  Continuing without glacier stats.")
+        return None
+
+    print(f"  RGI shapefile not found. Downloading...")
     print(f"  URL: {RGI_URL}")
 
     for attempt in range(3):
@@ -257,6 +269,21 @@ def extract_hls_stats(wtr_data: bytes, cloud_data: bytes | None,
     if cloud_data is not None:
         with rasterio.open(io.BytesIO(cloud_data)) as src:
             cloud_arr = src.read(1)
+            # If WTR and CLOUD come from different MGRS tiles (shape mismatch),
+            # reproject CLOUD onto the WTR grid so array operations work correctly.
+            if cloud_arr.shape != wtr.shape:
+                from rasterio.warp import reproject, Resampling
+                cloud_reproj = np.zeros(shape, dtype=cloud_arr.dtype)
+                reproject(
+                    source=cloud_arr,
+                    destination=cloud_reproj,
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=raster_crs,
+                    resampling=Resampling.nearest,
+                )
+                cloud_arr = cloud_reproj
         cloud = np.isin(cloud_arr, list(CLOUD_VALUES))
 
     n_valid = int(np.sum(valid))
