@@ -55,46 +55,33 @@ def download_rgi() -> Path | None:
 
     session = earthaccess.get_requests_https_session()
 
-    # First browse regional_files/ to find the correct subdirectory
-    print(f"  Browsing NSIDC regional_files/ directory...")
-    regional_url = RGI_NSIDC_BASE + "regional_files/"
-    try:
-        r = session.get(regional_url, timeout=30)
-        # Extract subfolder names from directory listing
-        import re as _re
-        subfolders = _re.findall(r'href="([^"]+/)"', r.text)
-        print(f"  Subfolders found: {subfolders}")
-    except Exception as e:
-        print(f"  Could not browse: {e}")
-        subfolders = []
+    # Browse the RGI2000-v7.0-G/ folder (glacier outlines) and list actual files
+    import re as _re
+    g_folder_url = RGI_NSIDC_BASE + "regional_files/RGI2000-v7.0-G/"
+    print(f"  Browsing {g_folder_url}")
 
-    # Build candidate URLs from discovered subfolders + hardcoded ones
-    dynamic_candidates = [
-        RGI_NSIDC_BASE + "regional_files/" + sf + RGI_FILENAME
-        for sf in subfolders if "RGI" in sf or "rgi" in sf
-    ]
-    all_candidates = dynamic_candidates + RGI_URL_CANDIDATES
-
-    # Try each candidate with a GET request (HEAD returns 401 with this auth)
     working_url = None
-    for url in all_candidates:
-        print(f"  Trying: {url}")
-        try:
-            r = session.get(url, stream=True, timeout=30)
-            if r.status_code == 200:
-                content_type = r.headers.get("content-type", "")
-                if "html" not in content_type:  # skip HTML error pages
-                    working_url = url
-                    print(f"  Found! ({r.headers.get('content-length', '?')} bytes)")
-                    r.close()
-                    break
-            print(f"  -> {r.status_code}")
-            r.close()
-        except Exception as e:
-            print(f"  -> ERROR: {e}")
+    try:
+        r = session.get(g_folder_url, timeout=30)
+        # Find all zip filenames in the directory listing
+        zip_files = _re.findall(r'href="([^"]+\.zip)"', r.text)
+        print(f"  Zip files in folder: {len(zip_files)}")
+        # Find the Region 12 file (contains "-12_" or "caucasus")
+        for zf in zip_files:
+            fname = zf.split("/")[-1]
+            if "-12_" in fname or "caucasus" in fname.lower():
+                working_url = g_folder_url + fname
+                print(f"  Found Region 12: {fname}")
+                break
+        if not working_url:
+            print("  Region 12 not found. All zip files:")
+            for zf in zip_files:
+                print(f"    {zf.split('/')[-1]}")
+    except Exception as e:
+        print(f"  Could not browse folder: {e}")
 
     if not working_url:
-        print("\nERROR: Could not find RGI zip on NSIDC.")
+        print("\nERROR: Could not find RGI Region 12 zip on NSIDC.")
         print("Manual download: https://nsidc.org/data/nsidc-0770/versions/7")
         print("Unpack Region 12 zip into static_data/")
         return None
