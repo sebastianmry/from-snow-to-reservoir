@@ -52,7 +52,6 @@ def download_rgi() -> Path | None:
         return existing[0]
 
     print(f"Downloading RGI v7 Region 12 from NSIDC...")
-    print(f"URL: {RGI_NSIDC_URL}")
 
     session = earthaccess.get_requests_https_session()
 
