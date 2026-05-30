@@ -3,7 +3,8 @@ FROM SNOW TO RESERVOIR - Time Series Extraction
 Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
 
 Reads clipped GeoTIFFs from Google Drive and computes per-date area statistics.
-Automatically downloads RGI v7 Region 12 (Caucasus) glacier outlines if missing.
+Requires RGI v7 Region 12 shapefile in static_data/ for glacier stats.
+Run download_glaciers.py first to fetch the shapefile.
 
 DSWx pixel values:
   B01_WTR (S1 + HLS):  1-5=water, 252=snow/ice, 255=NoData
@@ -14,16 +15,14 @@ Output per AOI:
   {site}_hls_timeseries.csv/.parquet  - water + snow + glacier stats from DSWx-HLS
 
 Usage:
+    python download_glaciers.py   # once, to fetch RGI shapefile
     python extract_timeseries.py
 """
 
-import earthaccess
 import io
 import re
 import csv
 import time
-import zipfile
-import requests
 from datetime import datetime
 from pathlib import Path
 
@@ -72,62 +71,21 @@ STATIC_DIR = Path("static_data")
 OUTPUT_DIR = Path(".")
 SITES      = ["enguri", "zhinvali"]
 
-# RGI v7 Region 12 (Caucasus and Middle East) - direct NSIDC HTTPS download
-# URL requires NASA Earthdata authentication (same account as earthaccess)
-RGI_NSIDC_URL = (
-    "https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/"
-    "regional_files/RGI2000-v7.0-G/"
-    "RGI2000-v7.0-G-12_caucasus-middle_east.zip"
-)
-RGI_FILENAME   = "RGI2000-v7.0-G-12_caucasus-middle_east.zip"
-RGI_ZIP        = STATIC_DIR / "rgi_region12.zip"
-RGI_SHP_GLOB   = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
+RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus-middle_east.shp"
 
 
 # ─────────────────────────────────────────────
-# RGI AUTO-DOWNLOAD
+# RGI LOOKUP (download via download_glaciers.py)
 # ─────────────────────────────────────────────
 
-def ensure_rgi() -> Path | None:
-    """Download and unpack RGI v7 Region 12 from NSIDC via authenticated HTTPS.
-    Uses the existing NASA Earthdata login (same credentials as download_to_drive.py).
-    """
-    STATIC_DIR.mkdir(exist_ok=True)
-
+def find_rgi() -> Path | None:
+    """Look for RGI shapefile in static_data/. Run download_glaciers.py to fetch it."""
     existing = list(STATIC_DIR.rglob(RGI_SHP_GLOB))
     if existing:
         print(f"  RGI shapefile found: {existing[0]}")
         return existing[0]
-
-    print(f"  RGI shapefile not found. Downloading from NSIDC...")
-    print(f"  URL: {RGI_NSIDC_URL}")
-
-    try:
-        # earthaccess.get_fsspec_https_session() provides an authenticated
-        # session that handles NASA Earthdata OAuth redirects automatically
-        fs = earthaccess.get_fsspec_https_session()
-        total = 0
-        with fs.open(RGI_NSIDC_URL) as f:
-            data = f.read()
-            total = len(data)
-        with open(RGI_ZIP, "wb") as out:
-            out.write(data)
-        print(f"  Download complete ({total / 1e6:.1f} MB)")
-    except Exception as e:
-        print(f"  ERROR downloading RGI: {e}")
-        return None
-
-    print("  Unpacking...")
-    with zipfile.ZipFile(RGI_ZIP, "r") as zf:
-        zf.extractall(STATIC_DIR)
-    RGI_ZIP.unlink()
-
-    existing = list(STATIC_DIR.rglob(RGI_SHP_GLOB))
-    if existing:
-        print(f"  RGI ready: {existing[0]}")
-        return existing[0]
-
-    print("  ERROR: Shapefile not found after unpack.")
+    print("  RGI shapefile not found. Run download_glaciers.py first.")
+    print("  Continuing without glacier stats.")
     return None
 
 
@@ -341,20 +299,12 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
 # ─────────────────────────────────────────────
 
 def main():
-    print("NASA Earthdata Login...")
-    try:
-        earthaccess.login(strategy="netrc")
-    except Exception:
-        print("  No _netrc found - enter credentials:")
-        earthaccess.login(strategy="interactive", persist=True)
-    print("NASA Login OK")
-
-    print("\nAuthenticating with Google Drive...")
+    print("Authenticating with Google Drive...")
     drive = authenticate()
 
     # ── RGI glacier data ─────────────────────
     print("\n--- RGI v7 Glacier Data ---")
-    rgi_shp = ensure_rgi()
+    rgi_shp = find_rgi()
 
     glacier_masks: dict[str, gpd.GeoDataFrame | None] = {}
     for aoi in [AOI_1, AOI_2]:
