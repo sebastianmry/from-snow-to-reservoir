@@ -6,9 +6,9 @@ Reads clipped GeoTIFFs from Google Drive and computes per-date area statistics.
 Requires RGI v7 Region 12 shapefile in static_data/ for glacier stats.
 Run download_glaciers.py first to fetch the shapefile.
 
-DSWx pixel values:
-  B01_WTR (S1 + HLS):  1-5=water, 252=snow/ice, 255=NoData
-  B09_CLOUD (HLS):     3=cloud shadow, 4=cloud, 255=NoData
+DSWx pixel values (B01_WTR, S1 + HLS):
+  1-5=water, 252=snow/ice, 253=cloud/cloud-shadow (HLS only), 255=NoData
+Cloud masking for HLS uses the WTR layer's own 253 flag (no separate B09 layer).
 
 Output per AOI:
   {site}_s1_timeseries.csv/.parquet   - water area from DSWx-S1
@@ -19,15 +19,13 @@ Usage:
     python extract_timeseries.py
 """
 
-import io
 import re
 import csv
-import time
+import json
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import rasterio
 from rasterio.features import rasterize
 from rasterio.io import MemoryFile
 from rasterio.enums import Resampling
@@ -48,7 +46,8 @@ except ImportError:
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-DRIVE_ROOT_FOLDER_ID = "1EdYn2RbULuEYj8dnPbK9Zshia6G50ssE"
+# Parent folder in Google Drive holding the hls/ and s1/ subfolders
+DRIVE_PARENT = "OPERA_DSWx"
 
 AOI_1 = {
     "name": "enguri",
@@ -62,16 +61,27 @@ AOI_2 = {
     "clip_box": (44.30, 42.00, 45.15, 42.80),
 }
 
-NODATA         = 255
-WATER_VALUES   = {1, 2, 3, 4, 5}
-SNOW_VALUE     = 252
-CLOUD_VALUES   = {3, 4}
+NODATA          = 255
+WATER_VALUES    = {1, 2, 3, 4, 5}
+SNOW_VALUE      = 252
+CLOUD_WTR_VALUE = 253  # WTR layer's own cloud/cloud-shadow flag (replaces B09)
 MAX_CLOUD_PCT  = 30.0
-MIN_VALID_PCT  = 80.0  # skip scenes where less than 80% of AOI pixels are valid (not NoData)
+MIN_VALID_PCT  = 95.0  # HLS (optical): skip scenes with < 95% valid AOI pixels
+# S1 (SAR) is masked much more aggressively in steep terrain (radar layover /
+# shadow in the Caucasus), so the same 95% would reject almost everything.
+# Lower threshold + the actual coverage is printed so it can be tuned.
+S1_MIN_VALID_PCT = 70.0
+S1_REPEAT_DAYS   = 12    # Sentinel-1 ground-track repeat cycle (orbit dedup)
+S1_FULL_COVER_PCT = 90.0  # orbit counts as full-AOI coverage (dedup prefers these)
 
 STATIC_DIR = Path("static_data")
+CACHE_DIR  = STATIC_DIR / "cache"
 OUTPUT_DIR = Path(".")
 SITES      = ["enguri", "zhinvali"]
+
+# AOIs straddle MGRS/UTM tile boundaries, so a single tile never covers the AOI.
+# Dates with fewer tiles are skipped before any download (cheap pre-filter).
+MIN_TILES  = 2
 
 RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
 
@@ -178,25 +188,67 @@ def read_bytes(drive_file) -> bytes:
 # PIXEL ANALYSIS
 # ─────────────────────────────────────────────
 
-def pixel_size_km2(src) -> float:
-    res_x = abs(src.transform.a)
-    res_y = abs(src.transform.e)
-    if src.crs and src.crs.is_geographic:
-        center_lat = (src.bounds.top + src.bounds.bottom) / 2
-        return (res_x * 111.32 * np.cos(np.radians(center_lat))) * (res_y * 110.574)
-    return (res_x * res_y) / 1e6
+def extract_s1_stats(wtr_da) -> dict:
+    """Water area from a mosaicked DSWx-S1 B01_WTR DataArray (EPSG:4326).
+    SAR is cloud-independent, so no cloud filter applies. Always returns the
+    stats incl. valid_px_pct; the caller decides whether coverage is sufficient."""
+    wtr = wtr_da.values[0]
+    px  = _pixel_size_km2_da(wtr_da)
 
+    valid     = wtr != NODATA
+    valid_pct = float(np.sum(valid)) / wtr.size * 100
 
-def extract_s1_stats(data: bytes) -> dict:
-    """Water area from DSWx-S1 B01_WTR."""
-    with rasterio.open(io.BytesIO(data)) as src:
-        arr = src.read(1)
-        px  = pixel_size_km2(src)
-    valid = arr != NODATA
     return {
-        "water_km2":    float(np.sum(np.isin(arr, list(WATER_VALUES))) * px),
-        "valid_px_pct": round(float(np.sum(valid)) / arr.size * 100, 2),
+        "water_km2":    float(np.sum(np.isin(wtr, list(WATER_VALUES))) * px),
+        "valid_px_pct": round(valid_pct, 2),
     }
+
+
+def dedup_single_orbit(rows: list[dict]) -> list[dict]:
+    """Reduce S1 dates to a single consistent relative orbit (one look geometry).
+
+    Each Sentinel-1 relative orbit repeats exactly every S1_REPEAT_DAYS, so dates
+    of the same orbit share the same phase = ordinal % S1_REPEAT_DAYS. We group by
+    that phase and keep the orbit that best covers the whole period (most scenes,
+    longest time span). This removes the geometry-dependent sawtooth caused by
+    mixing ascending/descending tracks, and drops the offset S1C track (kept for
+    consistency, not density). Coverage no longer distinguishes tracks after the
+    AOI clip, so phase - not coverage - is the robust orbit fingerprint.
+    """
+    if len(rows) < 2:
+        return rows
+    n_before = len(rows)
+
+    # 1. Drop genuinely partial scenes FIRST. A partial track (e.g. ~79% AOI)
+    #    passes the loose extraction threshold but must not enter the series.
+    #    Doing this before phase-grouping matters: with S1A+S1C, a partial and a
+    #    full track can share the same 12-day phase, so filtering by phase median
+    #    alone would still keep the partial scenes of the chosen phase.
+    rows = [r for r in rows if r["valid_px_pct"] >= S1_FULL_COVER_PCT]
+    if not rows:
+        return []
+
+    # 2. Group the full-coverage scenes by 12-day repeat phase (= relative orbit
+    #    for a single satellite) and keep the track that best spans the period.
+    ref = min(r["date"] for r in rows).toordinal()
+    by_phase: dict[int, list[dict]] = {}
+    for r in rows:
+        phase = (r["date"].toordinal() - ref) % S1_REPEAT_DAYS
+        by_phase.setdefault(phase, []).append(r)
+
+    def span_days(items: list[dict]) -> int:
+        return (max(i["date"] for i in items) - min(i["date"] for i in items)).days
+
+    def median_cov(items: list[dict]) -> float:
+        vals = sorted(i["valid_px_pct"] for i in items)
+        return vals[len(vals) // 2]
+
+    best_phase = max(by_phase, key=lambda p: (len(by_phase[p]), span_days(by_phase[p])))
+    kept = sorted(by_phase[best_phase], key=lambda r: r["date"])
+    print(f"    orbit dedup: {n_before} -> {len(kept)} scenes (dropped partials, "
+          f"kept 1 of {len(by_phase)} full-coverage orbits, phase {best_phase}, "
+          f"median cov {median_cov(kept):.1f}%)")
+    return kept
 
 
 def _open_da(data: bytes):
@@ -225,7 +277,10 @@ def mosaic_tiles(tile_bytes: list[bytes], nodata: int, clip_box: tuple):
         return None
 
     merged = arrays[0] if len(arrays) == 1 else merge_arrays(arrays, nodata=nodata)
-    # Pad to the full AOI extent so coverage is measured against the whole AOI
+    # Clip to exactly the AOI first: tiles from different UTM zones reproject to
+    # an oversized bounding box with NoData corners, which would otherwise deflate
+    # the valid-pixel percentage. Then pad back up in case data is smaller than AOI.
+    merged = merged.rio.clip_box(clip_box[0], clip_box[1], clip_box[2], clip_box[3])
     merged = merged.rio.pad_box(clip_box[0], clip_box[1], clip_box[2], clip_box[3],
                                 constant_values=nodata)
     return merged
@@ -240,11 +295,15 @@ def _pixel_size_km2_da(da) -> float:
     return (res_x * 111.32 * np.cos(np.radians(center_lat))) * (res_y * 110.574)
 
 
-def extract_hls_stats(wtr_da, cloud_da, glaciers: gpd.GeoDataFrame | None) -> dict | None:
+def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None) -> dict:
     """
     Water + snow/glacier stats from a mosaicked DSWx-HLS B01_WTR DataArray.
-    wtr_da / cloud_da are EPSG:4326 mosaics (output of mosaic_tiles).
-    Returns None if AOI coverage < MIN_VALID_PCT or cloud cover > MAX_CLOUD_PCT.
+    wtr_da is an EPSG:4326 mosaic (output of mosaic_tiles).
+
+    Cloud masking uses the WTR layer's own quality flag (value 253 =
+    cloud/cloud-shadow), the product's authoritative determination - no separate
+    B09 layer is needed. Always returns the stats incl. valid_px_pct and
+    cloud_cover_percent; the caller decides whether coverage / cloud are acceptable.
     """
     wtr       = wtr_da.values[0]
     px        = _pixel_size_km2_da(wtr_da)
@@ -252,23 +311,12 @@ def extract_hls_stats(wtr_da, cloud_da, glaciers: gpd.GeoDataFrame | None) -> di
     raster_crs = wtr_da.rio.crs
     shape     = wtr.shape
 
-    valid = wtr != NODATA
-    cloud = np.zeros_like(wtr, dtype=bool)
-
-    if cloud_da is not None:
-        # Align CLOUD mosaic onto the WTR grid (same extent/resolution)
-        cloud_aligned = cloud_da.rio.reproject_match(wtr_da, resampling=Resampling.nearest)
-        cloud_arr = cloud_aligned.values[0]
-        cloud = np.isin(cloud_arr, list(CLOUD_VALUES))
+    valid = wtr != NODATA          # has data (not fill); includes cloud-masked 253
+    cloud = wtr == CLOUD_WTR_VALUE  # product's own cloud/cloud-shadow flag
 
     n_valid = int(np.sum(valid))
     valid_pct = float(n_valid) / wtr.size * 100
     cloud_pct = float(np.sum(cloud & valid)) / max(n_valid, 1) * 100
-
-    if valid_pct < MIN_VALID_PCT:
-        return None
-    if cloud_pct > MAX_CLOUD_PCT:
-        return None
 
     usable      = valid & ~cloud
     water_mask  = np.isin(wtr, list(WATER_VALUES)) & usable
@@ -290,6 +338,39 @@ def extract_hls_stats(wtr_da, cloud_da, glaciers: gpd.GeoDataFrame | None) -> di
         "cloud_cover_percent": round(cloud_pct, 2),
         "valid_px_pct":        round(valid_pct, 2),
     }
+
+
+# ─────────────────────────────────────────────
+# PER-DATE CACHE (resume across runs)
+# ─────────────────────────────────────────────
+# Computing a date means downloading + mosaicking tiles from Drive (the slow
+# part). We cache the per-date result - including skipped dates and the reason -
+# so re-runs only touch dates not seen before. Pass refresh=True to recompute.
+
+def load_cache(name: str) -> dict:
+    p = CACHE_DIR / f"{name}.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def save_cache(name: str, cache: dict):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (CACHE_DIR / f"{name}.json").write_text(json.dumps(cache))
+
+
+def cache_rows(cache: dict) -> list[dict]:
+    """Build time-series rows from the 'ok' entries of a cache."""
+    rows = []
+    for date_str, entry in cache.items():
+        if entry.get("status") != "ok":
+            continue
+        stats = {k: v for k, v in entry.items() if k not in ("status", "reason")}
+        rows.append({"date": datetime.strptime(date_str, "%Y%m%d").date(), **stats})
+    return rows
 
 
 # ─────────────────────────────────────────────
@@ -331,7 +412,7 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
 # MAIN
 # ─────────────────────────────────────────────
 
-def main():
+def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
     print("Authenticating with Google Drive...")
     drive = authenticate()
 
@@ -347,54 +428,92 @@ def main():
         else:
             glacier_masks[aoi["name"]] = None
 
-    # ── DSWx-S1 ──────────────────────────────
-    print("\n--- DSWx-S1 B01_WTR ---")
-    s1_root = get_folder_id(drive, "s1", "root")
+    # Parent OPERA_DSWx folder holding hls/ and s1/
+    opera_root = get_folder_id(drive, DRIVE_PARENT, "root")
+    if not opera_root:
+        print(f"  '{DRIVE_PARENT}' folder not found - run download_hls.py / download_s1.py first")
+        return
 
-    for aoi in [AOI_1, AOI_2]:
+    # ── DSWx-S1 ──────────────────────────────
+    if skip_s1:
+        print("\n--- DSWx-S1 skipped (--skip-s1) ---")
+    print("\n--- DSWx-S1 B01_WTR ---" if not skip_s1 else "", end="")
+    s1_root = get_folder_id(drive, "s1", opera_root) if not skip_s1 else None
+
+    for aoi in ([] if skip_s1 else [AOI_1, AOI_2]):
         site = aoi["name"]
         rows: list[dict] = []
 
-        # Try new structure first, fall back to old
-        site_folder = None
-        if s1_root:
-            site_folder = get_folder_id(drive, site, s1_root)
+        site_folder = get_folder_id(drive, site, s1_root) if s1_root else None
         if not site_folder:
-            site_folder = get_folder_id(drive, site, DRIVE_ROOT_FOLDER_ID)
-        if not site_folder:
-            print(f"  Folder not found for {site} (S1)")
+            print(f"  Folder not found for {site} (S1) - skipping")
             continue
 
         files = [f for f in list_tifs_in_folder(drive, site_folder)
                  if "B01_WTR" in f["title"]]
-        print(f"  {site}: {len(files)} B01_WTR files")
 
-        for i, f in enumerate(files, 1):
+        # Group ALL tiles per date (multiple MGRS tiles cover the AOI)
+        wtr_by_date: dict[str, list] = {}
+        for f in files:
             meta = parse_filename(f["title"])
             if not meta:
                 continue
             _, date_str, _ = meta
-            print(f"  [{i:>3}/{len(files)}] {f['title']} ...", end=" ", flush=True)
-            try:
-                stats = extract_s1_stats(read_bytes(f))
-                rows.append({"date": datetime.strptime(date_str, "%Y%m%d").date(), **stats})
-                print(f"water={stats['water_km2']:.2f} km2")
-            except Exception as e:
-                print(f"ERROR: {e}")
+            wtr_by_date.setdefault(date_str, []).append(f)
 
+        dates = sorted(wtr_by_date.keys())
+        cache = {} if refresh else load_cache(f"{site}_s1")
+        print(f"  {site}: {len(files)} B01_WTR files, {len(dates)} dates "
+              f"({len(cache)} cached)")
+
+        for i, date_str in enumerate(dates, 1):
+            wtr_files = wtr_by_date[date_str]
+            n_tiles = len(wtr_files)
+            prefix = f"  [{i:>3}/{len(dates)}] {site}_s1_{date_str} ({n_tiles} tiles) ..."
+            if date_str in cache:
+                continue
+            print(prefix, end=" ", flush=True)
+            if n_tiles < MIN_TILES:
+                print(f"skipped (only {n_tiles} tile < {MIN_TILES}, cannot cover AOI)")
+                cache[date_str] = {"status": "skip", "reason": "few_tiles"}
+                save_cache(f"{site}_s1", cache)
+                continue
+            try:
+                wtr_mosaic = mosaic_tiles([read_bytes(f) for f in wtr_files],
+                                          NODATA, aoi["clip_box"])
+                if wtr_mosaic is None:
+                    print("skipped (no readable tiles)")
+                    cache[date_str] = {"status": "skip", "reason": "no_tiles"}
+                    save_cache(f"{site}_s1", cache)
+                    continue
+                stats = extract_s1_stats(wtr_mosaic)
+                if stats["valid_px_pct"] < S1_MIN_VALID_PCT:
+                    print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {S1_MIN_VALID_PCT}%)")
+                    cache[date_str] = {"status": "skip", "reason": "coverage", **stats}
+                else:
+                    cache[date_str] = {"status": "ok", **stats}
+                    print(f"water={stats['water_km2']:.2f} km2  (cov {stats['valid_px_pct']:.1f}%)")
+                save_cache(f"{site}_s1", cache)
+            except Exception as e:
+                print(f"ERROR: {e}")  # not cached -> retried next run
+
+        rows = cache_rows(cache)
         if rows:
+            rows = dedup_single_orbit(rows)
             save_outputs(rows, ["date", "water_km2", "valid_px_pct"],
                          f"{site}_s1_timeseries")
 
     # ── DSWx-HLS ─────────────────────────────
-    print("\n--- DSWx-HLS B01_WTR + B09_CLOUD ---")
-    hls_root = get_folder_id(drive, "hls", "root")
+    if skip_hls:
+        print("\n--- DSWx-HLS skipped (--skip-hls) ---")
+    print("\n--- DSWx-HLS B01_WTR (cloud mask = WTR 253) ---" if not skip_hls else "", end="")
+    hls_root = get_folder_id(drive, "hls", opera_root) if not skip_hls else None
 
-    if not hls_root:
-        print("  HLS folder not found - run download_to_drive.py first")
+    if not skip_hls and not hls_root:
+        print("  HLS folder not found - run download_hls.py first")
         return
 
-    for aoi in [AOI_1, AOI_2]:
+    for aoi in ([] if skip_hls else [AOI_1, AOI_2]):
         site     = aoi["name"]
         glaciers = glacier_masks.get(site)
         rows: list[dict] = []
@@ -406,9 +525,10 @@ def main():
 
         files = list_tifs_in_folder(drive, site_folder)
 
-        # Group ALL tiles per date (multiple MGRS tiles cover the AOI)
-        wtr_by_date:   dict[str, list] = {}
-        cloud_by_date: dict[str, list] = {}
+        # Group ALL WTR tiles per date (multiple MGRS tiles cover the AOI).
+        # Cloud masking comes from the WTR layer itself (value 253), so the
+        # B09_CLOUD layer is no longer needed.
+        wtr_by_date: dict[str, list] = {}
         for f in files:
             meta = parse_filename(f["title"])
             if not meta:
@@ -416,43 +536,52 @@ def main():
             _, date_str, layer = meta
             if "B01_WTR" in layer:
                 wtr_by_date.setdefault(date_str, []).append(f)
-            elif "B09_CLOUD" in layer:
-                cloud_by_date.setdefault(date_str, []).append(f)
 
         dates = sorted(wtr_by_date.keys())
-        print(f"  {site}: {len(dates)} WTR dates, {len(cloud_by_date)} CLOUD dates")
+        cache = {} if refresh else load_cache(f"{site}_hls")
+        print(f"  {site}: {len(dates)} WTR dates ({len(cache)} cached)")
 
         for i, date_str in enumerate(dates, 1):
-            wtr_files   = wtr_by_date[date_str]
-            cloud_files = cloud_by_date.get(date_str, [])
+            wtr_files = wtr_by_date[date_str]
             n_tiles = len(wtr_files)
-            print(f"  [{i:>3}/{len(dates)}] {site}_hls_{date_str} ({n_tiles} tiles) ...",
-                  end=" ", flush=True)
+            prefix = f"  [{i:>3}/{len(dates)}] {site}_hls_{date_str} ({n_tiles} tiles) ..."
+            if date_str in cache:
+                continue
+            print(prefix, end=" ", flush=True)
+            if n_tiles < MIN_TILES:
+                print(f"skipped (only {n_tiles} tile < {MIN_TILES}, cannot cover AOI)")
+                cache[date_str] = {"status": "skip", "reason": "few_tiles"}
+                save_cache(f"{site}_hls", cache)
+                continue
             try:
-                # Mosaic all WTR (and CLOUD) tiles for this date into one AOI raster
+                # Mosaic all WTR tiles for this date into one AOI raster
                 wtr_mosaic = mosaic_tiles([read_bytes(f) for f in wtr_files],
                                           NODATA, aoi["clip_box"])
                 if wtr_mosaic is None:
                     print("skipped (no readable tiles)")
+                    cache[date_str] = {"status": "skip", "reason": "no_tiles"}
+                    save_cache(f"{site}_hls", cache)
                     continue
-                cloud_mosaic = None
-                if cloud_files:
-                    cloud_mosaic = mosaic_tiles([read_bytes(f) for f in cloud_files],
-                                                NODATA, aoi["clip_box"])
 
-                stats = extract_hls_stats(wtr_mosaic, cloud_mosaic, glaciers)
-                if stats is None:
-                    print(f"skipped (coverage < {MIN_VALID_PCT}% or cloud > {MAX_CLOUD_PCT}%)")
-                    continue
-                rows.append({"date": datetime.strptime(date_str, "%Y%m%d").date(), **stats})
-                print(f"water={stats['water_area_km2']:.2f}  "
-                      f"snow_seas={stats['seasonal_snow_km2']:.1f}  "
-                      f"snow_glac={stats['snow_on_glacier_km2']:.1f}  "
-                      f"bare_ice={stats['bare_ice_km2']:.1f}  "
-                      f"cloud={stats['cloud_cover_percent']:.0f}%")
+                stats = extract_hls_stats(wtr_mosaic, glaciers)
+                if stats["valid_px_pct"] < MIN_VALID_PCT:
+                    print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {MIN_VALID_PCT}%)")
+                    cache[date_str] = {"status": "skip", "reason": "coverage", **stats}
+                elif stats["cloud_cover_percent"] > MAX_CLOUD_PCT:
+                    print(f"skipped (cloud {stats['cloud_cover_percent']:.1f}% > {MAX_CLOUD_PCT}%)")
+                    cache[date_str] = {"status": "skip", "reason": "cloud", **stats}
+                else:
+                    cache[date_str] = {"status": "ok", **stats}
+                    print(f"water={stats['water_area_km2']:.2f}  "
+                          f"snow_seas={stats['seasonal_snow_km2']:.1f}  "
+                          f"snow_glac={stats['snow_on_glacier_km2']:.1f}  "
+                          f"bare_ice={stats['bare_ice_km2']:.1f}  "
+                          f"cloud={stats['cloud_cover_percent']:.0f}%")
+                save_cache(f"{site}_hls", cache)
             except Exception as e:
-                print(f"ERROR: {e}")
+                print(f"ERROR: {e}")  # not cached -> retried next run
 
+        rows = cache_rows(cache)
         if rows:
             save_outputs(
                 rows,
@@ -463,4 +592,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Extract DSWx time series from Google Drive.")
+    parser.add_argument("--skip-s1", action="store_true", help="skip the DSWx-S1 section")
+    parser.add_argument("--skip-hls", action="store_true", help="skip the DSWx-HLS section")
+    parser.add_argument("--refresh", action="store_true",
+                        help="ignore the per-date cache and recompute everything")
+    args = parser.parse_args()
+    main(skip_s1=args.skip_s1, skip_hls=args.skip_hls, refresh=args.refresh)

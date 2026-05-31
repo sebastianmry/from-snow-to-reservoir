@@ -92,13 +92,39 @@ def make_mock_data(aoi_key: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_timeseries(aoi_key: str) -> tuple[pd.DataFrame, bool]:
-    """Load parquet timeseries. Returns (df, is_mock)."""
+    """Load HLS parquet timeseries (snow / glacier). Returns (df, is_mock)."""
     path = Path(f"{aoi_key}_timeseries.parquet")
     if path.exists():
         df = pd.read_parquet(path)
         df["date"] = pd.to_datetime(df["date"])
         return df.sort_values("date").reset_index(drop=True), False
     return make_mock_data(aoi_key), True
+
+
+@st.cache_data(show_spinner=False)
+def load_s1_timeseries(aoi_key: str) -> tuple[pd.DataFrame, bool]:
+    """Load DSWx-S1 parquet timeseries (water surface). Returns (df, is_mock).
+
+    Water comes from S1, not HLS: optical HLS massively over-detects water
+    (terrain shadow / ice misclassified), so the reservoir water signal uses
+    the cloud-independent radar product (column water_km2).
+    """
+    path = Path(f"{aoi_key}_s1_timeseries.parquet")
+    if path.exists():
+        df = pd.read_parquet(path)
+        df["date"] = pd.to_datetime(df["date"])
+        return df.sort_values("date").reset_index(drop=True), False
+    # Mock fallback: a smooth ~12-day water series
+    rng = np.random.default_rng(seed=99 if aoi_key == "enguri" else 13)
+    dates = pd.date_range("2024-08-01", periods=55, freq="12D")
+    t = np.linspace(0, 4 * np.pi, len(dates))
+    base = 24 if aoi_key == "enguri" else 40
+    water = base + 6 * np.sin(t * 0.5 + 1) + rng.normal(0, 0.6, len(dates))
+    return pd.DataFrame({
+        "date": pd.to_datetime(dates),
+        "water_km2": np.round(water, 2),
+        "valid_px_pct": np.round(rng.uniform(98, 100, len(dates)), 1),
+    }), True
 
 
 # ─────────────────────────────────────────────
@@ -172,7 +198,7 @@ def load_rivers(aoi_key: str) -> list[dict] | None:
 
 @st.cache_data(show_spinner=False)
 def load_glaciers(clip_box: tuple) -> gpd.GeoDataFrame | None:
-    candidates = list(STATIC_DIR.rglob("RGI2000-v7.0-G-12_caucasus-middle_east.shp"))
+    candidates = list(STATIC_DIR.rglob("RGI2000-v7.0-G-12_caucasus*middle_east.shp"))
     if not candidates:
         return None
     try:
@@ -256,37 +282,22 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
 # ─────────────────────────────────────────────
 
 def chart_water(df: pd.DataFrame) -> go.Figure:
+    """Water surface from DSWx-S1 (column water_km2). SAR is cloud-independent,
+    so the series is gap-free (no cloud shading needed)."""
     fig = go.Figure()
-
-    # Cloud gap shading
-    cloud_mask = df["water_area_km2"].isna()
-    in_gap = False
-    gap_start = None
-    for i, is_gap in enumerate(cloud_mask):
-        if is_gap and not in_gap:
-            gap_start = df["date"].iloc[i]
-            in_gap = True
-        elif not is_gap and in_gap:
-            fig.add_vrect(
-                x0=gap_start, x1=df["date"].iloc[i],
-                fillcolor="lightgray", opacity=0.3, line_width=0,
-                annotation_text="Wolken", annotation_position="top left",
-                annotation_font_size=9,
-            )
-            in_gap = False
 
     fig.add_trace(go.Scatter(
         x=df["date"],
-        y=df["water_area_km2"],
-        mode="lines",
-        name="Wasserflaeche",
+        y=df["water_km2"],
+        mode="lines+markers",
+        name="Wasserflaeche (S1/Radar)",
         line=dict(color="#2980b9", width=2),
-        connectgaps=False,
+        marker=dict(size=4),
         hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra></extra>",
     ))
 
     fig.update_layout(
-        title="Stausee-Wasserflaeche",
+        title="Stausee-Wasserflaeche (DSWx-S1, ~12-Tage)",
         xaxis_title=None,
         yaxis_title="Flaeche (km²)",
         hovermode="x unified",
@@ -370,19 +381,21 @@ with st.sidebar:
     st.caption("Automatisierte Geodatenprozessierung SoSe26\nSebastian Macherey")
 
 # ── Load data ────────────────────────────────
+# Snow / glacier come from HLS (optical), water comes from S1 (radar).
 with st.spinner("Lade Zeitreihen..."):
-    df_full, is_mock = load_timeseries(aoi["key"])
+    df_hls_full, is_mock_hls = load_timeseries(aoi["key"])
+    df_s1_full,  is_mock_s1  = load_s1_timeseries(aoi["key"])
 
-if is_mock:
+if is_mock_hls or is_mock_s1:
     st.warning(
-        "Parquet-Datei noch nicht vorhanden - Pipeline-Download laueft noch. "
-        "Dashboard zeigt synthetische Demo-Daten.",
+        "Parquet-Datei(en) noch nicht vorhanden - Dashboard zeigt teils synthetische "
+        "Demo-Daten. extract_timeseries.py ausfuehren fuer echte Werte.",
         icon="⏳",
     )
 
-# Date range slider
-min_date = df_full["date"].min().date()
-max_date = df_full["date"].max().date()
+# Date range slider (spanning both series)
+min_date = min(df_hls_full["date"].min(), df_s1_full["date"].min()).date()
+max_date = max(df_hls_full["date"].max(), df_s1_full["date"].max()).date()
 
 date_range = st.sidebar.slider(
     "Zeitraum",
@@ -392,57 +405,60 @@ date_range = st.sidebar.slider(
     format="DD.MM.YYYY",
 )
 
-df = df_full[
-    (df_full["date"] >= pd.Timestamp(date_range[0])) &
-    (df_full["date"] <= pd.Timestamp(date_range[1]))
-].copy()
+def _slice(d: pd.DataFrame) -> pd.DataFrame:
+    return d[(d["date"] >= pd.Timestamp(date_range[0])) &
+             (d["date"] <= pd.Timestamp(date_range[1]))].copy()
+
+df    = _slice(df_hls_full)   # HLS: snow / glacier
+df_s1 = _slice(df_s1_full)    # S1: water
 
 # ── KPI tiles ────────────────────────────────
-latest = df.dropna(subset=["water_area_km2"]).iloc[-1] if not df.dropna(subset=["water_area_km2"]).empty else None
-max_water = df["water_area_km2"].max()
-max_snow   = (df["seasonal_snow_km2"] + df["snow_on_glacier_km2"]).max()
+# Water from S1; snow / glacier from HLS
+latest_w   = df_s1.iloc[-1] if not df_s1.empty else None
+max_water  = df_s1["water_km2"].max() if not df_s1.empty else None
+
+latest_h    = df.iloc[-1] if not df.empty else None
+max_snow    = (df["seasonal_snow_km2"] + df["snow_on_glacier_km2"]).max() if not df.empty else None
 latest_snow = (
-    latest["seasonal_snow_km2"] + latest["snow_on_glacier_km2"]
-    if latest is not None else None
+    latest_h["seasonal_snow_km2"] + latest_h["snow_on_glacier_km2"]
+    if latest_h is not None else None
 )
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    if latest is not None:
+    if latest_w is not None:
         st.metric(
-            "Wasserflaeche (aktuell)",
-            f"{latest['water_area_km2']:.2f} km²",
+            "Wasserflaeche (S1, aktuell)",
+            f"{latest_w['water_km2']:.2f} km²",
             delta=f"Max: {max_water:.2f} km²",
             delta_color="off",
         )
     else:
-        st.metric("Wasserflaeche (aktuell)", "Keine Daten")
+        st.metric("Wasserflaeche (S1, aktuell)", "Keine Daten")
 
 with col2:
     if latest_snow is not None:
         st.metric(
-            "Gesamtschnee (aktuell)",
+            "Gesamtschnee (HLS, aktuell)",
             f"{latest_snow:.0f} km²",
             delta=f"Max: {max_snow:.0f} km²",
             delta_color="off",
         )
     else:
-        st.metric("Gesamtschnee (aktuell)", "Keine Daten")
+        st.metric("Gesamtschnee (HLS, aktuell)", "Keine Daten")
 
 with col3:
-    if latest is not None:
-        st.metric("Blankes Gletschereis", f"{latest['bare_ice_km2']:.1f} km²")
+    if latest_h is not None:
+        st.metric("Blankes Gletschereis", f"{latest_h['bare_ice_km2']:.1f} km²")
     else:
         st.metric("Blankes Gletschereis", "Keine Daten")
 
 with col4:
-    n_total = len(df)
-    n_cloud = df["water_area_km2"].isna().sum()
     st.metric(
         "Szenen im Zeitraum",
-        f"{n_total - n_cloud} verwertbar",
-        delta=f"{n_cloud} Wolkentage ausgefiltert",
+        f"{len(df_s1)} S1 (Wasser)",
+        delta=f"{len(df)} HLS (Schnee)",
         delta_color="off",
     )
 
@@ -470,15 +486,20 @@ with chart_col:
     tab1, tab2 = st.tabs(["Wasserflaeche", "Schnee & Eis"])
 
     with tab1:
-        st.plotly_chart(chart_water(df), use_container_width=True)
+        st.plotly_chart(chart_water(df_s1), use_container_width=True)
 
     with tab2:
         st.plotly_chart(chart_snow(df), use_container_width=True)
 
-# ── Data table (collapsible) ──────────────────
+# ── Data tables (collapsible) ─────────────────
 with st.expander("Rohdaten anzeigen"):
+    st.caption("Wasser (DSWx-S1)")
+    st.dataframe(
+        df_s1.sort_values("date", ascending=False).reset_index(drop=True),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption("Schnee / Gletscher (DSWx-HLS)")
     st.dataframe(
         df.sort_values("date", ascending=False).reset_index(drop=True),
-        use_container_width=True,
-        hide_index=True,
+        use_container_width=True, hide_index=True,
     )
