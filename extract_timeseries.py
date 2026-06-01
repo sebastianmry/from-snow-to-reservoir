@@ -83,12 +83,12 @@ SNOW_VALUE      = 252
 CLOUD_WTR_VALUE = 253  # WTR layer's own cloud/cloud-shadow flag (replaces B09)
 MAX_CLOUD_PCT  = 30.0
 MIN_VALID_PCT  = 95.0  # HLS (optical): skip scenes with < 95% valid AOI pixels
-# S1 (SAR) is masked much more aggressively in steep terrain (radar layover /
-# shadow in the Caucasus), so the same 95% would reject almost everything.
-# Lower threshold + the actual coverage is printed so it can be tuned.
-S1_MIN_VALID_PCT = 70.0
-S1_REPEAT_DAYS   = 12    # Sentinel-1 ground-track repeat cycle (orbit dedup)
-S1_FULL_COVER_PCT = 90.0  # orbit counts as full-AOI coverage (dedup prefers these)
+# S1 (SAR): since we anchor to one relative orbit, require full AOI coverage
+# already at extract time. Partial orbits (e.g. swath-edge scenes like the 79%
+# 2025-09-17 Enguri date) are skipped here instead of only later in the dedup.
+S1_MIN_VALID_PCT  = 90.0
+S1_REPEAT_DAYS    = 12    # Sentinel-1 ground-track repeat cycle (orbit dedup)
+S1_FULL_COVER_PCT = 90.0  # orbit counts as full-AOI coverage (dedup partial filter)
 
 STATIC_DIR = Path("static_data")
 CACHE_DIR  = STATIC_DIR / "cache"
@@ -115,6 +115,12 @@ def dem_path(site: str) -> Path:
 # Water-level estimation parameters (INFLOS-style shoreline sampling).
 LEVEL_MIN_SHORE_PX = 30    # need at least this many shoreline pixels for a level
 LEVEL_Z_THRESH     = 1.0   # drop shoreline heights with |z| > 1 (INFLOS default)
+# The Copernicus DEM captured the reservoirs AS water and flattened the surface,
+# so there is no bathymetry. Where the DEM in the footprint is flat (relief
+# p95-p5 below this), the shoreline always samples the same plateau and the
+# level is not retrievable -> we suppress it for that AOI (e.g. Zhinvali, flat
+# at 805.5 m). Enguri has real canyon-wall relief above its ~425 m floor.
+LEVEL_MIN_RELIEF_M = 10.0
 
 
 # ─────────────────────────────────────────────
@@ -176,6 +182,26 @@ def load_dem(site: str):
     except Exception as e:
         print(f"  ERROR loading DEM: {e}")
         return None
+
+
+def dem_has_relief(dem, reservoir: gpd.GeoDataFrame) -> bool:
+    """True if the DEM inside the reservoir footprint has real vertical relief.
+
+    The Copernicus DEM flattens captured water bodies, so a reservoir that was
+    full at DEM time is a flat plateau (no bathymetry) -> the level cannot be
+    retrieved. We measure relief as p95-p5 of the DEM within the footprint."""
+    try:
+        sub = dem.rio.clip(reservoir.geometry, reservoir.crs)
+    except Exception:
+        return False
+    v = sub.values.astype(float).ravel()
+    v = v[np.isfinite(v) & (v > -1000)]
+    nod = dem.rio.nodata
+    if nod is not None:
+        v = v[v != nod]
+    if v.size < 50:
+        return False
+    return float(np.percentile(v, 95) - np.percentile(v, 5)) >= LEVEL_MIN_RELIEF_M
 
 
 def shoreline_level(water_mask: np.ndarray, res_mask: np.ndarray,
@@ -578,6 +604,10 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
 
         reservoir = load_reservoir(site)
         dem = load_dem(site) if reservoir is not None else None
+        if dem is not None and not dem_has_relief(dem, reservoir):
+            print(f"  DEM over {site} reservoir is flat (no bathymetry) "
+                  f"- water level not retrievable, skipping level")
+            dem = None
         if reservoir is not None:
             print(f"  reservoir polygon loaded for {site}"
                   + ("  + DEM (water level)" if dem is not None else ""))
@@ -672,7 +702,9 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
             fieldnames = ["date", "water_km2", "valid_px_pct"]
             if any("reservoir_area_km2" in r for r in rows):
                 fieldnames.insert(2, "reservoir_area_km2")
-            if any("reservoir_level_m" in r for r in rows):
+            # Only emit the level column when the DEM was usable (has relief);
+            # for flat-DEM AOIs the cache may hold a degenerate constant value.
+            if dem is not None and any("reservoir_level_m" in r for r in rows):
                 fieldnames.insert(fieldnames.index("valid_px_pct"), "reservoir_level_m")
             save_outputs(rows, fieldnames, f"{site}_s1_timeseries")
 
