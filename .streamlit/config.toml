@@ -1,0 +1,4 @@
+# Dashboard theme: blue accent instead of Streamlit's default red.
+# Affects sliders, tab underlines, widget focus, links, etc.
+[theme]
+primaryColor = "#2980b9"

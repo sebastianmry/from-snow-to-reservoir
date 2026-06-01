@@ -357,25 +357,13 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             tooltip=tip,
         ).add_to(m)
 
-    # Dam marker - clean dark-grey tech marker (bolt = hydropower) instead of a pin
+    # Dam marker - blue water droplet
     dam_lon, dam_lat = aoi["dam"]
-    dam_icon = folium.DivIcon(
-        icon_size=(26, 26),
-        icon_anchor=(13, 13),
-        html=(
-            '<div style="width:22px;height:22px;background:#2c3e50;'
-            'border:2px solid #ecf0f1;border-radius:4px;display:flex;'
-            'align-items:center;justify-content:center;'
-            'box-shadow:0 1px 4px rgba(0,0,0,0.35);">'
-            '<span style="color:#ecf0f1;font-size:13px;line-height:1;">&#9889;</span>'
-            '</div>'
-        ),
-    )
     folium.Marker(
         location=[dam_lat, dam_lon],
         popup=folium.Popup(aoi["dam_label"], max_width=200),
         tooltip=aoi["dam_label"],
-        icon=dam_icon,
+        icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
     ).add_to(m)
 
     folium.LayerControl().add_to(m)
