@@ -540,7 +540,7 @@ st.set_page_config(
 )
 
 st.title("From Snow to Reservoir")
-st.caption("Live-Monitoring von Schneeschmelze, Gletschern und Talsperren im Kaukasus (Georgien)")
+st.caption("Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus")
 
 # ── Sidebar ──────────────────────────────────
 with st.sidebar:

@@ -1,5 +1,5 @@
 # FROM SNOW TO RESERVOIR
-### Live-Monitoring von Schneeschmelze, Gletschern und Talsperren im Kaukasus
+### Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus
 
 Von Sebastian Macherey · [github.com/sebastianmry/from-snow-to-reservoir](https://github.com/sebastianmry/from-snow-to-reservoir)
 
