@@ -276,31 +276,32 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
 
     m = folium.Map(
         location=[center_lat, center_lon],
-        tiles="CartoDB dark_matter",
+        tiles="CartoDB positron",
     )
     # Fit exactly to the AOI so it is always centered regardless of AOI size
     m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
-    # AOI bounding box (lighter grey for contrast on the dark basemap)
+    # AOI bounding box
     folium.Rectangle(
         bounds=[[min_lat, min_lon], [max_lat, max_lon]],
-        color="#8fa0b0",
+        color="#5d6d7e",
         weight=1.5,
         dash_array="6,6",
         fill=False,
         tooltip="Untersuchungsgebiet (AOI)",
     ).add_to(m)
 
-    # Glacier polygons - strong white so they pop on the dark basemap
+    # Glacier polygons - white fill with a crisp blue outline so they stand out
+    # against the light basemap (white-on-light needs the edge to read).
     if glaciers is not None:
         folium.GeoJson(
             glaciers.__geo_interface__,
             name="RGI v7 Gletscher",
             style_function=lambda _: {
                 "fillColor": "#ffffff",
-                "color": "#cfe8f5",
-                "weight": 0.8,
-                "fillOpacity": 0.9,
+                "color": "#3498db",
+                "weight": 1.2,
+                "fillOpacity": 0.92,
             },
             tooltip=folium.GeoJsonTooltip(fields=["glac_name"] if "glac_name" in glaciers.columns else []),
         ).add_to(m)
@@ -312,9 +313,9 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             {"type": "FeatureCollection", "features": rivers},
             name="Fluesse (HydroRIVERS)",
             style_function=lambda feat: {
-                "color": "#4aa3df",
+                "color": "#2980b9",
                 "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
-                "opacity": 0.9 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.6,
+                "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
             },
             tooltip=folium.GeoJsonTooltip(
                 fields=["ORD_FLOW"] if any("ORD_FLOW" in f["properties"] for f in rivers) else [],
@@ -348,10 +349,10 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             reservoir.__geo_interface__,
             name="Stausee-Footprint (S1)",
             style_function=lambda _: {
-                "fillColor": "#3aa0e0",
-                "color": "#aed6f1",
+                "fillColor": "#2980b9",
+                "color": "#1a5276",
                 "weight": 1.5,
-                "fillOpacity": 0.65,
+                "fillOpacity": 0.55,
             },
             tooltip=tip,
         ).add_to(m)
