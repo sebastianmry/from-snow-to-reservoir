@@ -128,6 +128,8 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
 - ACHTUNG Kosten: Neue clip_box -> kompletter Re-Download (HLS + S1, andere MGRS-Kacheln/Footprint)
   + Neuberechnung (derive_reservoir, extract_timeseries) + Re-Clip der statischen Daten. Mehrstuendig.
   Bewusst planen, nicht nebenbei.
+- User-Einschaetzung (2026-06-01): grosser Umbau, aber technisch deutlich sauberer -> lohnt sich;
+  als naechste groessere Ueberarbeitung eingeplant.
 
 ### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
 - User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen
