@@ -344,24 +344,30 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
         tooltip="Untersuchungsgebiet (AOI)",
     ).add_to(m)
 
-    # Glacier polygons - light ice-blue fill with a strong edge. Pure white is
-    # invisible on the light basemap; this reads as ice yet clearly stands out
-    # and stays distinguishable from the darker blue water layers.
+    # Glacier polygons - cool light violet so they stay distinct from the blue
+    # water layers and the white basemap. Split into named/unnamed: only named
+    # glaciers get a tooltip, so hovering an unnamed one shows nothing.
     if glaciers is not None:
-        folium.GeoJson(
-            glaciers.__geo_interface__,
-            name="RGI v7 Gletscher",
-            style_function=lambda _: {
-                "fillColor": "#d6eaf8",
-                "color": "#2e86c1",
-                "weight": 1.3,
-                "fillOpacity": 0.95,
-            },
-            tooltip=folium.GeoJsonTooltip(
-                fields=["glac_name"] if "glac_name" in glaciers.columns else [],
-                labels=False,  # show only the name, no "glac_name:" prefix
-            ),
-        ).add_to(m)
+        glacier_style = lambda _: {
+            "fillColor": "#cfc6e8",
+            "color": "#7e6fb8",
+            "weight": 1.3,
+            "fillOpacity": 0.9,
+        }
+        has_name = "glac_name" in glaciers.columns
+        named = glaciers[glaciers["glac_name"] != ""] if has_name else glaciers
+        unnamed = glaciers[glaciers["glac_name"] == ""] if has_name else glaciers.iloc[0:0]
+
+        if not unnamed.empty:
+            folium.GeoJson(unnamed.__geo_interface__, name="RGI v7 Gletscher",
+                           style_function=glacier_style).add_to(m)
+        if not named.empty:
+            folium.GeoJson(
+                named.__geo_interface__,
+                name="RGI v7 Gletscher (benannt)",
+                style_function=glacier_style,
+                tooltip=folium.GeoJsonTooltip(fields=["glac_name"], labels=False),
+            ).add_to(m)
 
     # River lines - GeoJson handles both LineString and MultiLineString.
     # Width scales with flow order (larger rivers thicker, small tributaries thin).
