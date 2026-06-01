@@ -166,7 +166,11 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   genutzte Reihe: enguri 20240829 (49 volle Szenen), zhinvali 20240825 (52). Ersetzt die
   fruehere Auto-Auswahl durch dedup (die je nach Coverage schwanken konnte). dedup bleibt als
   Teil-Szenen-Filter. Cache-Rows werden vor dem Schreiben auf die Anker-Phase beschraenkt.
-- Reservoir-Polygon zusaetzlich in `app.py` auf der Karte darstellen (NAECHSTER kleiner Schritt).
+- **app.py FERTIG (2026-06-01):** `load_reservoir()` liest reservoirs.geojson; Footprint-Polygon
+  auf der Folium-Karte (blau, Flaechen-Tooltip) + Caption; Wasser-Chart zeigt reservoir_area_km2
+  als Hauptlinie und AOI-water_km2 als blasse Referenz; KPI-Kachel zeigt Stausee-Flaeche.
+  Headless mit streamlit AppTest geprueft (beide AOIs, 0 Exceptions). Bekannt/offen: das ganze
+  Dashboard nutzt noch `use_container_width` (deprecated, nur Warnung) - spaeter modernisieren.
 
 ### Danach: Wasserpegel aus Flaeche + DEM (INFLOS-Ansatz statt Hypsometrie)
 - Statt hypsometrischer Flaeche->Pegel-Kurve den Pegel DIREKT messen (INFLOS, Poterek 2025,
