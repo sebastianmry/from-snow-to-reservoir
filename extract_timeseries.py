@@ -13,7 +13,8 @@ Cloud masking for HLS uses the WTR layer's own 253 flag (no separate B09 layer).
 Output per AOI:
   {site}_s1_timeseries.csv/.parquet   - water area from DSWx-S1 (AOI-wide +
                                         reservoir_area_km2 if reservoirs.geojson
-                                        exists, see derive_reservoir.py)
+                                        exists, + reservoir_level_m if a DEM from
+                                        download_dem.py exists)
   {site}_hls_timeseries.csv/.parquet  - water + snow + glacier stats from DSWx-HLS
 
 Usage:
@@ -28,9 +29,11 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from scipy import ndimage
 from rasterio.features import rasterize
 from rasterio.io import MemoryFile
 from rasterio.enums import Resampling
+import xarray as xr
 import rioxarray  # noqa: F401  (registers the .rio accessor)
 from rioxarray.merge import merge_arrays
 import geopandas as gpd
@@ -103,6 +106,16 @@ RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
 # AOI-wide water (which also includes rivers).
 RESERVOIR_GEOJSON = STATIC_DIR / "reservoirs.geojson"
 
+# Copernicus DEM GLO-30 per AOI (download_dem.py). Reference elevation for the
+# reservoir water LEVEL: at the shoreline the water-surface elevation equals the
+# DEM height there (INFLOS, Poterek et al. 2025).
+def dem_path(site: str) -> Path:
+    return STATIC_DIR / f"{site}_dem.tif"
+
+# Water-level estimation parameters (INFLOS-style shoreline sampling).
+LEVEL_MIN_SHORE_PX = 30    # need at least this many shoreline pixels for a level
+LEVEL_Z_THRESH     = 1.0   # drop shoreline heights with |z| > 1 (INFLOS default)
+
 
 # ─────────────────────────────────────────────
 # RGI LOOKUP (download via download_glaciers.py)
@@ -151,6 +164,62 @@ def load_reservoir(site: str) -> gpd.GeoDataFrame | None:
     except Exception as e:
         print(f"  ERROR loading reservoir polygon: {e}")
         return None
+
+
+def load_dem(site: str):
+    """Open the AOI DEM (download_dem.py) as a 2D EPSG:4326 DataArray with coords."""
+    p = dem_path(site)
+    if not p.exists():
+        return None
+    try:
+        return rioxarray.open_rasterio(p).squeeze()
+    except Exception as e:
+        print(f"  ERROR loading DEM: {e}")
+        return None
+
+
+def shoreline_level(water_mask: np.ndarray, res_mask: np.ndarray,
+                    transform, dem) -> float | None:
+    """Reservoir water level (m a.s.l.) from the S1 shoreline + DEM (INFLOS idea).
+
+    At the water's edge the surface elevation equals the DEM height there. We
+    take the reservoir water pixels that touch dry land (the current waterline),
+    sample the DEM at those points, drop |z|>1 outliers and return the median -
+    the lake is one flat plane, so a single robust elevation is the level.
+    """
+    reservoir_water = water_mask & res_mask
+    if int(reservoir_water.sum()) < LEVEL_MIN_SHORE_PX:
+        return None
+
+    # Shoreline = reservoir-water pixels adjacent to (dry) land. As the pool is
+    # drawn down the exposed bed becomes land, so this tracks the receding edge.
+    land = ~water_mask
+    shore = reservoir_water & ndimage.binary_dilation(land)
+    rows, cols = np.where(shore)
+    if rows.size < LEVEL_MIN_SHORE_PX:
+        return None
+
+    # Pixel centres -> lon/lat (EPSG:4326 north-up grid: b == d == 0)
+    lon = transform.c + transform.a * (cols + 0.5)
+    lat = transform.f + transform.e * (rows + 0.5)
+    h = dem.sel(x=xr.DataArray(lon, dims="pts"),
+                y=xr.DataArray(lat, dims="pts"), method="nearest").values.astype(float)
+
+    valid = np.isfinite(h) & (h > -1000)
+    nod = dem.rio.nodata
+    if nod is not None:
+        valid &= (h != nod)
+    h = h[valid]
+    if h.size < LEVEL_MIN_SHORE_PX:
+        return None
+
+    # |z| > 1 outlier filter (INFLOS default), then median.
+    sd = h.std()
+    if sd > 0:
+        h = h[np.abs((h - h.mean()) / sd) <= LEVEL_Z_THRESH]
+    if h.size == 0:
+        return None
+    return round(float(np.median(h)), 2)
 
 
 def rasterize_glaciers(glaciers: gpd.GeoDataFrame, src_crs, transform, shape: tuple) -> np.ndarray:
@@ -223,7 +292,7 @@ def read_bytes(drive_file) -> bytes:
 # PIXEL ANALYSIS
 # ─────────────────────────────────────────────
 
-def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None) -> dict:
+def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None, dem=None) -> dict:
     """Water area from a mosaicked DSWx-S1 B01_WTR DataArray (EPSG:4326).
     SAR is cloud-independent, so no cloud filter applies. Always returns the
     stats incl. valid_px_pct; the caller decides whether coverage is sufficient.
@@ -245,9 +314,15 @@ def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None) -> dict:
     }
 
     if reservoir is not None and not reservoir.empty:
-        res_mask = rasterize_glaciers(reservoir, wtr_da.rio.crs,
-                                      wtr_da.rio.transform(), wtr.shape)
+        transform = wtr_da.rio.transform()
+        res_mask = rasterize_glaciers(reservoir, wtr_da.rio.crs, transform, wtr.shape)
         stats["reservoir_area_km2"] = float(np.sum(water_mask & res_mask) * px)
+
+        # Water level from the shoreline + DEM (INFLOS); needs the AOI DEM.
+        if dem is not None:
+            level = shoreline_level(water_mask, res_mask, transform, dem)
+            if level is not None:
+                stats["reservoir_level_m"] = level
 
     return stats
 
@@ -502,8 +577,10 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
         rows: list[dict] = []
 
         reservoir = load_reservoir(site)
+        dem = load_dem(site) if reservoir is not None else None
         if reservoir is not None:
-            print(f"  reservoir polygon loaded for {site}")
+            print(f"  reservoir polygon loaded for {site}"
+                  + ("  + DEM (water level)" if dem is not None else ""))
 
         site_folder = get_folder_id(drive, site, s1_root) if s1_root else None
         if not site_folder:
@@ -544,10 +621,14 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
             prefix = f"  [{i:>3}/{len(dates)}] {site}_s1_{date_str} ({n_tiles} tiles) ..."
             cached = cache.get(date_str)
             if cached is not None:
-                # Recompute "ok" dates that predate the reservoir polygon so the
-                # new reservoir_area_km2 gets filled in; otherwise honour the cache.
-                stale = (reservoir is not None and cached.get("status") == "ok"
-                         and "reservoir_area_km2" not in cached)
+                # Recompute "ok" dates that predate the reservoir polygon / DEM so
+                # the new reservoir_area_km2 / reservoir_level_m get filled in;
+                # otherwise honour the cache.
+                ok = cached.get("status") == "ok"
+                stale = ok and (
+                    (reservoir is not None and "reservoir_area_km2" not in cached)
+                    or (dem is not None and "reservoir_level_m" not in cached)
+                )
                 if not stale:
                     continue
             print(prefix, end=" ", flush=True)
@@ -564,15 +645,17 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
                     cache[date_str] = {"status": "skip", "reason": "no_tiles"}
                     save_cache(f"{site}_s1", cache)
                     continue
-                stats = extract_s1_stats(wtr_mosaic, reservoir)
+                stats = extract_s1_stats(wtr_mosaic, reservoir, dem)
                 if stats["valid_px_pct"] < S1_MIN_VALID_PCT:
                     print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {S1_MIN_VALID_PCT}%)")
                     cache[date_str] = {"status": "skip", "reason": "coverage", **stats}
                 else:
                     cache[date_str] = {"status": "ok", **stats}
                     res = stats.get("reservoir_area_km2")
+                    lvl = stats.get("reservoir_level_m")
                     res_str = f"  reservoir={res:.2f} km2" if res is not None else ""
-                    print(f"water={stats['water_km2']:.2f} km2{res_str}  "
+                    lvl_str = f"  level={lvl:.1f} m" if lvl is not None else ""
+                    print(f"water={stats['water_km2']:.2f} km2{res_str}{lvl_str}  "
                           f"(cov {stats['valid_px_pct']:.1f}%)")
                 save_cache(f"{site}_s1", cache)
             except Exception as e:
@@ -589,6 +672,8 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
             fieldnames = ["date", "water_km2", "valid_px_pct"]
             if any("reservoir_area_km2" in r for r in rows):
                 fieldnames.insert(2, "reservoir_area_km2")
+            if any("reservoir_level_m" in r for r in rows):
+                fieldnames.insert(fieldnames.index("valid_px_pct"), "reservoir_level_m")
             save_outputs(rows, fieldnames, f"{site}_s1_timeseries")
 
     # ── DSWx-HLS ─────────────────────────────

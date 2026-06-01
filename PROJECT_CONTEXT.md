@@ -172,7 +172,22 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   Headless mit streamlit AppTest geprueft (beide AOIs, 0 Exceptions). Bekannt/offen: das ganze
   Dashboard nutzt noch `use_container_width` (deprecated, nur Warnung) - spaeter modernisieren.
 
-### Danach: Wasserpegel aus Flaeche + DEM (INFLOS-Ansatz statt Hypsometrie)
+### Wasserpegel aus Uferlinie + DEM (INFLOS) - CODE FERTIG, Re-Lauf ausstehend
+- `download_dem.py` (NEU): Copernicus DEM GLO-30 Kacheln pro AOI vom oeffentlichen
+  AWS-Bucket (kein Login), gemerged + auf AOI geclippt -> `static_data/{aoi}_dem.tif`
+  (Enguri 28-4642 m, Zhinvali 0-5025 m).
+- `extract_timeseries.py`: `shoreline_level()` + `reservoir_level_m` in der S1-Sektion.
+  Pro Datum: Uferlinie = Reservoir-Wasserpixel, die an (trockenes) Land grenzen ->
+  DEM-Hoehen sampeln (xr.sel nearest) -> |z|>1-Filter (INFLOS-Default) -> Median = Pegel.
+  Params: LEVEL_MIN_SHORE_PX=30, LEVEL_Z_THRESH=1.0. Spalte erscheint, wenn DEM da ist;
+  Cache-Stale-Logik recomputed Daten ohne reservoir_level_m.
+- VALIDIERUNG (offline, Voll-Pool): Zhinvali 805,5 m ~ reales Stauziel ~810 m (Punktlandung!),
+  Enguri 464 m. **Zhinvali max. 75 m tief** (User) -> Grund ~730 m, Pegel-Band ~730-810 m,
+  Jahres-Hub muss << 75 m sein. Das ist die Sanity-Check-Grenze fuer den Re-Lauf.
+- AUSSTEHEND: `python download_dem.py` (erledigt) -> `python extract_timeseries.py --skip-hls`
+  (Re-Lauf des verankerten Orbits, ~10-15 min) fuellt reservoir_level_m. Danach Pegel in app.py.
+
+### (Hintergrund) Wasserpegel-Methodik: INFLOS-Ansatz statt Hypsometrie
 - Statt hypsometrischer Flaeche->Pegel-Kurve den Pegel DIREKT messen (INFLOS, Poterek 2025,
   Remote Sens. 17(2):329): an der Uferlinie ist die Wassertiefe ~0, also = DEM-Hoehe. Pro Datum
   die S1-Uferlinie des Reservoirs mit Copernicus DEM GLO-30 verschneiden, Ufer-Hoehen sampeln,
