@@ -113,7 +113,10 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (`derive_reservoir.py`) + `reservoir_area_km2` in den S1-Parquets, Orbit fest verankert.
   Details siehe Abschnitt "Reservoir-Polygone + Fuellwerte" unten.
 
-### GEPLANT (naechster Schritt): Raster-Overlay (TIFs) im Dashboard mit Zeit-Durchschau
+### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
+- User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen
+  (Schnee/Eis/Wasser-Farben) - und zwar fuer BEIDE Sensoren: S1 (Wasser) UND HLS
+  (Schnee/Eis), nicht nur S1.
 - Karte soll die eigentlichen GeoTIFFs anzeigen und gestylt darstellen, sodass man per Datums-Slider durch die Szenen blaettern und die Veraenderungen ueber die Zeit sehen kann (Schnee/Eis/Wasser im Jahresverlauf).
 - ANGEREICHERTE Version: `B01_WTR` (Mosaik) pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
   Wasser (1-5) = blau, saisonaler Schnee = weiss, Schnee-auf-Gletscher = hellblau, blankes Gletschereis = tuerkis/grau.
