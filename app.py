@@ -549,7 +549,10 @@ with st.sidebar:
     aoi = AOIS[aoi_label]
 
     st.divider()
-    st.caption("Automatisierte Geodatenprozessierung SoSe26\nSebastian Macherey")
+    st.caption(
+        "Von Sebastian Macherey · "
+        "[GitHub](https://github.com/sebastianmry/from-snow-to-reservoir)"
+    )
 
 # ── Load data ────────────────────────────────
 # Snow / glacier come from HLS (optical), water comes from S1 (radar).
