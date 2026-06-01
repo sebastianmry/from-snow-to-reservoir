@@ -45,9 +45,12 @@ AOIS = {
     "zhinvali": {"bbox": (44.30, 42.00, 45.15, 42.80), "dam": (44.771, 42.133)},
 }
 
-# Only keep major rivers: ORD_FLOW is the logarithmic flow-order class.
-# Lower value = larger river. Keep classes <= this threshold to avoid clutter.
-MAX_FLOW_ORDER = 6
+# ORD_FLOW is the logarithmic flow-order class (lower value = larger river).
+# Keep classes <= this threshold. 7 includes the smaller glacial-fed tributaries
+# (one step below the main stems) while still dropping the tiniest headwater
+# trickles (8-9). The upstream-of-dam filter already restricts to the reservoir
+# catchment, i.e. segments at or above reservoir elevation.
+MAX_FLOW_ORDER = 7
 
 
 # ─────────────────────────────────────────────
@@ -111,9 +114,13 @@ def upstream_of_dam(gdf: gpd.GeoDataFrame, dam_lon: float, dam_lat: float) -> gp
         print("  (no flow topology fields - skipping upstream filter)")
         return gdf
 
-    # Segment nearest the dam = catchment outlet
+    # Segment nearest the dam = catchment outlet. Compute the distance on a
+    # projected CRS (UTM 38N) - distance() on a geographic CRS warns and is
+    # inaccurate. The index maps back to the original (4326) gdf.
     dam = Point(dam_lon, dam_lat)
-    outlet_id = gdf.loc[gdf.geometry.distance(dam).idxmin(), "HYRIV_ID"]
+    gdf_utm = gdf.to_crs("EPSG:32638")
+    dam_utm = gpd.GeoSeries([dam], crs="EPSG:4326").to_crs("EPSG:32638").iloc[0]
+    outlet_id = gdf.loc[gdf_utm.geometry.distance(dam_utm).idxmin(), "HYRIV_ID"]
 
     # Reverse adjacency: which segments flow INTO each segment
     flows_into = defaultdict(list)

@@ -18,7 +18,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from shapely.geometry import shape
 from streamlit_folium import st_folium
+
+# Main inflow river per AOI (HydroRIVERS has no names; curated). The label is
+# placed automatically on the actual main stem, see river_label_point().
+MAIN_RIVER = {"enguri": "Enguri", "zhinvali": "Aragvi"}
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
@@ -233,6 +238,35 @@ def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
 # MAP
 # ─────────────────────────────────────────────
 
+def _river_weight(ord_flow) -> float:
+    """Line width from flow order (lower order = larger river = thicker)."""
+    try:
+        o = int(ord_flow)
+    except (TypeError, ValueError):
+        o = 6
+    return max(1.0, (8 - o) * 0.9)
+
+
+def river_label_point(features: list[dict]) -> tuple[float, float] | None:
+    """A point on the main stem (longest line of the lowest flow order) to
+    anchor the river-name label, so the name always sits on the actual river."""
+    if not features:
+        return None
+    orders = [f["properties"].get("ORD_FLOW", 9) for f in features]
+    min_ord = min(orders)
+    best, best_len = None, -1.0
+    for f in features:
+        if f["properties"].get("ORD_FLOW", 9) != min_ord:
+            continue
+        g = shape(f["geometry"])
+        if g.length > best_len:
+            best, best_len = g, g.length
+    if best is None:
+        return None
+    pt = best.interpolate(0.5, normalized=True)
+    return (pt.y, pt.x)
+
+
 def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None,
               reservoir: gpd.GeoDataFrame | None = None) -> folium.Map:
     min_lon, min_lat, max_lon, max_lat = aoi["clip_box"]
@@ -271,18 +305,40 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             tooltip=folium.GeoJsonTooltip(fields=["glac_name"] if "glac_name" in glaciers.columns else []),
         ).add_to(m)
 
-    # River lines - GeoJson handles both LineString and MultiLineString,
-    # and works for HydroRIVERS data as well as the simplified fallback
+    # River lines - GeoJson handles both LineString and MultiLineString.
+    # Width scales with flow order (larger rivers thicker, small tributaries thin).
     if rivers:
         folium.GeoJson(
             {"type": "FeatureCollection", "features": rivers},
             name="Fluesse (HydroRIVERS)",
-            style_function=lambda _: {
+            style_function=lambda feat: {
                 "color": "#2980b9",
-                "weight": 2,
-                "opacity": 0.8,
+                "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
+                "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
             },
+            tooltip=folium.GeoJsonTooltip(
+                fields=["ORD_FLOW"] if any("ORD_FLOW" in f["properties"] for f in rivers) else [],
+                aliases=["Flussordnung:"],
+            ),
         ).add_to(m)
+
+        # River-name label on the main stem
+        anchor = river_label_point(rivers)
+        name = MAIN_RIVER.get(aoi["key"])
+        if anchor and name:
+            folium.Marker(
+                location=list(anchor),
+                icon=folium.DivIcon(
+                    icon_size=(90, 18),
+                    icon_anchor=(45, 9),
+                    html=(
+                        '<div style="font-size:11px;font-weight:600;color:#1a5276;'
+                        'background:rgba(255,255,255,0.65);border-radius:3px;'
+                        'text-align:center;white-space:nowrap;font-style:italic;">'
+                        f'{name}</div>'
+                    ),
+                ),
+            ).add_to(m)
 
     # Reservoir footprint (S1-derived) - the actual lake polygon
     if reservoir is not None and not reservoir.empty:
