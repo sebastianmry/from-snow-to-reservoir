@@ -1,7 +1,7 @@
 # FROM SNOW TO RESERVOIR
 ### Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus
 
-Von Sebastian Macherey · [github.com/sebastianmry/from-snow-to-reservoir](https://github.com/sebastianmry/from-snow-to-reservoir)
+© Sebastian Macherey · [github.com/sebastianmry/from-snow-to-reservoir](https://github.com/sebastianmry/from-snow-to-reservoir)
 
 ---
 
