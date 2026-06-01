@@ -291,17 +291,18 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
         tooltip="Untersuchungsgebiet (AOI)",
     ).add_to(m)
 
-    # Glacier polygons - white fill with a crisp blue outline so they stand out
-    # against the light basemap (white-on-light needs the edge to read).
+    # Glacier polygons - light ice-blue fill with a strong edge. Pure white is
+    # invisible on the light basemap; this reads as ice yet clearly stands out
+    # and stays distinguishable from the darker blue water layers.
     if glaciers is not None:
         folium.GeoJson(
             glaciers.__geo_interface__,
             name="RGI v7 Gletscher",
             style_function=lambda _: {
-                "fillColor": "#ffffff",
-                "color": "#3498db",
-                "weight": 1.2,
-                "fillOpacity": 0.92,
+                "fillColor": "#d6eaf8",
+                "color": "#2e86c1",
+                "weight": 1.3,
+                "fillOpacity": 0.95,
             },
             tooltip=folium.GeoJsonTooltip(fields=["glac_name"] if "glac_name" in glaciers.columns else []),
         ).add_to(m)
@@ -323,8 +324,13 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             ),
         ).add_to(m)
 
-        # River-name label on the main stem
-        anchor = river_label_point(rivers)
+        # River-name label - centered on the reservoir (the river runs through
+        # it), falling back to the main-stem midpoint if no reservoir polygon.
+        if reservoir is not None and not reservoir.empty:
+            c = reservoir.geometry.union_all().centroid
+            anchor = (c.y, c.x)
+        else:
+            anchor = river_label_point(rivers)
         name = MAIN_RIVER.get(aoi["key"])
         if anchor and name:
             folium.Marker(
