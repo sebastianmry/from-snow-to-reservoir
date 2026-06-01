@@ -315,15 +315,11 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # Fit exactly to the AOI so it is always centered regardless of AOI size
     m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
-    # Reservoir centre (used for both the marker and the name label). The label
-    # is nudged slightly north of centre so it does not overlap the marker.
-    res_center = None
+    # Reservoir centre for placing the name label (the river runs through it).
     res_label_anchor = None
     if reservoir is not None and not reservoir.empty:
         c = reservoir.geometry.union_all().centroid
-        res_center = (c.y, c.x)
-        b = reservoir.total_bounds  # minx, miny, maxx, maxy
-        res_label_anchor = (c.y + (b[3] - b[1]) * 0.12, c.x)
+        res_label_anchor = (c.y, c.x)
 
     # AOI bounding box
     folium.Rectangle(
@@ -399,12 +395,10 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             tooltip=tip,
         ).add_to(m)
 
-    # Blue water droplet - placed at the reservoir centre (falls back to the
-    # actual dam point if no reservoir polygon is available).
+    # Dam marker - blue water droplet at the actual dam location (southern outlet)
     dam_lon, dam_lat = aoi["dam"]
-    marker_loc = list(res_center) if res_center else [dam_lat, dam_lon]
     folium.Marker(
-        location=marker_loc,
+        location=[dam_lat, dam_lon],
         popup=folium.Popup(aoi["dam_label"], max_width=200),
         tooltip=aoi["dam_label"],
         icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
