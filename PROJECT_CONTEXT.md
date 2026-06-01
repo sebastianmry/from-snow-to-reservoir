@@ -1,4 +1,5 @@
-# Project Context: FROM SNOW TO RESERVOIR (Live-Monitoring Georgien)
+# Project Context: FROM SNOW TO RESERVOIR
+Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus
 
 ## 1. Projektziel & Geographie
 Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Georgien) zur Analyse der Verbindung von Schneeschmelze, Gletscherrückgang und Talsperren-Wasserständen.
