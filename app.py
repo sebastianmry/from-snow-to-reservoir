@@ -211,7 +211,20 @@ def load_glaciers(clip_box: tuple) -> gpd.GeoDataFrame | None:
         gdf = gpd.read_file(candidates[0], bbox=(min_lon, min_lat, max_lon, max_lat))
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs("EPSG:4326")
-        return gdf if not gdf.empty else None
+        if gdf.empty:
+            return None
+        # Clean the name column: keep only real names; blank out empty values and
+        # catalogue IDs (e.g. "198b", "193a") - a real name has a run of >=3
+        # letters, an ID does not. Unicode-aware so Cyrillic names are kept.
+        if "glac_name" in gdf.columns:
+            import re
+            def _clean_name(v):
+                s = "" if v is None else str(v).strip()
+                if s.lower() in ("", "nan", "none"):
+                    return ""
+                return s if re.search(r"[^\W\d_]{3,}", s) else ""
+            gdf["glac_name"] = gdf["glac_name"].map(_clean_name)
+        return gdf
     except Exception:
         return None
 
@@ -344,7 +357,10 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                 "weight": 1.3,
                 "fillOpacity": 0.95,
             },
-            tooltip=folium.GeoJsonTooltip(fields=["glac_name"] if "glac_name" in glaciers.columns else []),
+            tooltip=folium.GeoJsonTooltip(
+                fields=["glac_name"] if "glac_name" in glaciers.columns else [],
+                labels=False,  # show only the name, no "glac_name:" prefix
+            ),
         ).add_to(m)
 
     # River lines - GeoJson handles both LineString and MultiLineString.
