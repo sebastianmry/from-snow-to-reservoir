@@ -11,7 +11,9 @@ DSWx pixel values (B01_WTR, S1 + HLS):
 Cloud masking for HLS uses the WTR layer's own 253 flag (no separate B09 layer).
 
 Output per AOI:
-  {site}_s1_timeseries.csv/.parquet   - water area from DSWx-S1
+  {site}_s1_timeseries.csv/.parquet   - water area from DSWx-S1 (AOI-wide +
+                                        reservoir_area_km2 if reservoirs.geojson
+                                        exists, see derive_reservoir.py)
   {site}_hls_timeseries.csv/.parquet  - water + snow + glacier stats from DSWx-HLS
 
 Usage:
@@ -49,16 +51,27 @@ except ImportError:
 # Parent folder in Google Drive holding the hls/ and s1/ subfolders
 DRIVE_PARENT = "OPERA_DSWx"
 
+# s1_anchor: one date (YYYYMMDD) of the chosen Sentinel-1 relative orbit. The S1
+# section keeps ONLY dates sharing this orbit's 12-day phase (ordinal % 12), so
+# the series is one consistent look geometry and we download just that orbit
+# (~1/4 of the dates here) instead of all of them. Anchors picked from cache
+# coverage to match the established series:
+#   enguri  20240829 = 49 full scenes since 2024-08-29 (the orbit the previous
+#     auto-dedup already used; 99.2% coverage).
+#   zhinvali 20240825 = 52 full scenes since 2024-08-24, 99.7% (also the previous
+#     series; zhinvali's 30.08 phase is a late S1C track from May 2025 - unusable).
 AOI_1 = {
     "name": "enguri",
     "label": "Enguri Talsperre + Svaneti",
     "clip_box": (41.70, 42.55, 42.80, 43.15),   # (min_lon, min_lat, max_lon, max_lat)
+    "s1_anchor": "20240829",
 }
 
 AOI_2 = {
     "name": "zhinvali",
     "label": "Zhinvali Talsperre + Gergeti",
     "clip_box": (44.30, 42.00, 45.15, 42.80),
+    "s1_anchor": "20240825",
 }
 
 NODATA          = 255
@@ -84,6 +97,11 @@ SITES      = ["enguri", "zhinvali"]
 MIN_TILES  = 2
 
 RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
+
+# Reservoir footprint (S1-derived envelope from derive_reservoir.py). Used to
+# measure water area INSIDE the reservoir specifically, separate from the
+# AOI-wide water (which also includes rivers).
+RESERVOIR_GEOJSON = STATIC_DIR / "reservoirs.geojson"
 
 
 # ─────────────────────────────────────────────
@@ -115,6 +133,23 @@ def load_glacier_mask(shp_path: Path, clip_box: tuple) -> gpd.GeoDataFrame | Non
         return gdf
     except Exception as e:
         print(f"  ERROR loading RGI: {e}")
+        return None
+
+
+def load_reservoir(site: str) -> gpd.GeoDataFrame | None:
+    """Load the S1-derived reservoir polygon for one site (derive_reservoir.py)."""
+    if not RESERVOIR_GEOJSON.exists():
+        return None
+    try:
+        gdf = gpd.read_file(RESERVOIR_GEOJSON)
+        gdf = gdf[gdf["aoi"] == site]
+        if gdf.empty:
+            return None
+        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        return gdf
+    except Exception as e:
+        print(f"  ERROR loading reservoir polygon: {e}")
         return None
 
 
@@ -188,20 +223,42 @@ def read_bytes(drive_file) -> bytes:
 # PIXEL ANALYSIS
 # ─────────────────────────────────────────────
 
-def extract_s1_stats(wtr_da) -> dict:
+def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None) -> dict:
     """Water area from a mosaicked DSWx-S1 B01_WTR DataArray (EPSG:4326).
     SAR is cloud-independent, so no cloud filter applies. Always returns the
-    stats incl. valid_px_pct; the caller decides whether coverage is sufficient."""
+    stats incl. valid_px_pct; the caller decides whether coverage is sufficient.
+
+    If a reservoir polygon is given, also report reservoir_area_km2 = water
+    pixels INSIDE the reservoir footprint - separate from the AOI-wide water
+    (which also includes rivers). This is the level-relevant signal and is
+    far less noisy than the AOI total (no valley-floor speckle, orbit-robust)."""
     wtr = wtr_da.values[0]
     px  = _pixel_size_km2_da(wtr_da)
 
-    valid     = wtr != NODATA
-    valid_pct = float(np.sum(valid)) / wtr.size * 100
+    valid      = wtr != NODATA
+    valid_pct  = float(np.sum(valid)) / wtr.size * 100
+    water_mask = np.isin(wtr, list(WATER_VALUES))
 
-    return {
-        "water_km2":    float(np.sum(np.isin(wtr, list(WATER_VALUES))) * px),
+    stats = {
+        "water_km2":    float(np.sum(water_mask) * px),
         "valid_px_pct": round(valid_pct, 2),
     }
+
+    if reservoir is not None and not reservoir.empty:
+        res_mask = rasterize_glaciers(reservoir, wtr_da.rio.crs,
+                                      wtr_da.rio.transform(), wtr.shape)
+        stats["reservoir_area_km2"] = float(np.sum(water_mask & res_mask) * px)
+
+    return stats
+
+
+def orbit_phase(date_str: str, anchor: str) -> int:
+    """12-day repeat phase of a date relative to an anchor date (both YYYYMMDD).
+    Dates of the same Sentinel-1 relative orbit share the same phase. Phase 0
+    means the date sits on the anchor's orbit."""
+    d = datetime.strptime(date_str, "%Y%m%d").date().toordinal()
+    a = datetime.strptime(anchor, "%Y%m%d").date().toordinal()
+    return (d - a) % S1_REPEAT_DAYS
 
 
 def dedup_single_orbit(rows: list[dict]) -> list[dict]:
@@ -444,6 +501,10 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
         site = aoi["name"]
         rows: list[dict] = []
 
+        reservoir = load_reservoir(site)
+        if reservoir is not None:
+            print(f"  reservoir polygon loaded for {site}")
+
         site_folder = get_folder_id(drive, site, s1_root) if s1_root else None
         if not site_folder:
             print(f"  Folder not found for {site} (S1) - skipping")
@@ -462,16 +523,33 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
             wtr_by_date.setdefault(date_str, []).append(f)
 
         dates = sorted(wtr_by_date.keys())
+
+        # Keep only the chosen relative orbit (one 12-day phase). The other
+        # phases would be dropped by dedup_single_orbit anyway, so pre-filtering
+        # here means we download just that orbit (~1/12 of the dates) instead of
+        # all of them, and the series is anchored to the exact chosen cycle.
+        anchor = aoi.get("s1_anchor")
+        if anchor:
+            dates = [d for d in dates if orbit_phase(d, anchor) == 0]
+
         cache = {} if refresh else load_cache(f"{site}_s1")
         print(f"  {site}: {len(files)} B01_WTR files, {len(dates)} dates "
+              f"on the {anchor} orbit ({len(cache)} cached)" if anchor else
+              f"  {site}: {len(files)} B01_WTR files, {len(dates)} dates "
               f"({len(cache)} cached)")
 
         for i, date_str in enumerate(dates, 1):
             wtr_files = wtr_by_date[date_str]
             n_tiles = len(wtr_files)
             prefix = f"  [{i:>3}/{len(dates)}] {site}_s1_{date_str} ({n_tiles} tiles) ..."
-            if date_str in cache:
-                continue
+            cached = cache.get(date_str)
+            if cached is not None:
+                # Recompute "ok" dates that predate the reservoir polygon so the
+                # new reservoir_area_km2 gets filled in; otherwise honour the cache.
+                stale = (reservoir is not None and cached.get("status") == "ok"
+                         and "reservoir_area_km2" not in cached)
+                if not stale:
+                    continue
             print(prefix, end=" ", flush=True)
             if n_tiles < MIN_TILES:
                 print(f"skipped (only {n_tiles} tile < {MIN_TILES}, cannot cover AOI)")
@@ -486,22 +564,32 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
                     cache[date_str] = {"status": "skip", "reason": "no_tiles"}
                     save_cache(f"{site}_s1", cache)
                     continue
-                stats = extract_s1_stats(wtr_mosaic)
+                stats = extract_s1_stats(wtr_mosaic, reservoir)
                 if stats["valid_px_pct"] < S1_MIN_VALID_PCT:
                     print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {S1_MIN_VALID_PCT}%)")
                     cache[date_str] = {"status": "skip", "reason": "coverage", **stats}
                 else:
                     cache[date_str] = {"status": "ok", **stats}
-                    print(f"water={stats['water_km2']:.2f} km2  (cov {stats['valid_px_pct']:.1f}%)")
+                    res = stats.get("reservoir_area_km2")
+                    res_str = f"  reservoir={res:.2f} km2" if res is not None else ""
+                    print(f"water={stats['water_km2']:.2f} km2{res_str}  "
+                          f"(cov {stats['valid_px_pct']:.1f}%)")
                 save_cache(f"{site}_s1", cache)
             except Exception as e:
                 print(f"ERROR: {e}")  # not cached -> retried next run
 
         rows = cache_rows(cache)
+        # The cache may still hold ok-dates of other phases from earlier full
+        # runs; restrict the series to the chosen orbit before writing.
+        if anchor:
+            rows = [r for r in rows
+                    if orbit_phase(r["date"].strftime("%Y%m%d"), anchor) == 0]
         if rows:
             rows = dedup_single_orbit(rows)
-            save_outputs(rows, ["date", "water_km2", "valid_px_pct"],
-                         f"{site}_s1_timeseries")
+            fieldnames = ["date", "water_km2", "valid_px_pct"]
+            if any("reservoir_area_km2" in r for r in rows):
+                fieldnames.insert(2, "reservoir_area_km2")
+            save_outputs(rows, fieldnames, f"{site}_s1_timeseries")
 
     # ── DSWx-HLS ─────────────────────────────
     if skip_hls:

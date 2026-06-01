@@ -97,7 +97,7 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
 
 ---
 
-## 3. Aktueller Bearbeitungsstand (Stand: 2026-05-31)
+## 3. Aktueller Bearbeitungsstand (Stand: 2026-06-01)
 
 - **Stufe 1 fertig:** HLS + S1 Download Enguri + Zhinvali komplett im Drive (MGRS-getaggt).
 - **Stufe 2 fertig:** HLS- UND S1-Zeitreihen berechnet. Coverage-Bug (Mosaik-Clip) gefixt,
@@ -109,6 +109,9 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   plausibel (~22-26 km² Enguri, ~40 km² Zhinvali) mit Abwaerts-Trend.
   Rest-Rauschen: S1-Wasser zappelt ±1-2 km² (SAR-Speckle/Wind + bei Enguri zwei volle
   Tracks im selben Phasen-Bucket) - wird durch Reservoir-Polygon/Glaettung sauberer.
+- **Reservoir-Flaeche fertig (2026-06-01):** S1-abgeleitete Stausee-Polygone
+  (`derive_reservoir.py`) + `reservoir_area_km2` in den S1-Parquets, Orbit fest verankert.
+  Details siehe Abschnitt "Reservoir-Polygone + Fuellwerte" unten.
 
 ### GEPLANT (naechster Schritt): Raster-Overlay (TIFs) im Dashboard mit Zeit-Durchschau
 - Karte soll die eigentlichen GeoTIFFs anzeigen und gestylt darstellen, sodass man per Datums-Slider durch die Szenen blaettern und die Veraenderungen ueber die Zeit sehen kann (Schnee/Eis/Wasser im Jahresverlauf).
@@ -118,19 +121,52 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
 
 **Implementierungs-Ansatz (Stabilitaet):** Vorrendern statt live rechnen. Ein separates `render_overlays.py` (laeuft einmal nach `extract_timeseries.py`) erzeugt pro gefiltertem Datum ein kleines, eingefaerbtes PNG nach `static_data/overlays/{aoi}/{date}.png` (+ Bounds-Sidecar). Die App laedt nur fertige PNGs via `folium.ImageOverlay` - kein Rasterrechnen zur Laufzeit, stabil und fluessig durchblaetterbar. Hebel: Aufloesung reduzieren, nur gefilterte Tage rendern, `@st.cache_data`, batch-weise mit Speicherfreigabe, PNGs lokal (kein Drive-Zugriff zur Laufzeit).
 
-### NAECHSTER SCHRITT: Reservoir-Polygone sauber darstellen + Fuellwerte
-- `static_data/reservoirs.geojson` erzeugt (2 Polygone), ABER Flaechen wirken klein:
-  Enguri 4,85 km², Zhinvali 5,65 km² (Enguri real eher ~13 km²). HydroLAKES (aus ~2000er
-  Wassermaske) unterschaetzt, oder am Damm wurde ein zu kleiner Teil-Wasserkoerper gewaehlt.
-  -> ZUERST: Polygone gegen S1-Wasser / Satellitenbild gegenchecken, ggf. anderes Polygon
-  waehlen oder puffern. Auch CRS-Warnung in `download_reservoirs.py` fixen (distance() auf
-  geografischem CRS -> vorher to_crs auf projiziertes CRS).
-- Dann `extract_timeseries.py` um `reservoir_area_km2` erweitern = S1-Wasserpixel (1-5) nur
-  **innerhalb** des Stausee-Polygons, getrennt von der AOI-Gesamtwasserflaeche (mit Fluessen).
-  Das beseitigt auch das ±1-2 km² Rest-Rauschen (Talboden, orbit-/speckle-robuster).
-- Reservoir-Polygon zusaetzlich in `app.py` auf der Karte darstellen.
-- Danach Wasserpegel: Flaeche -> Pegel ueber hypsometrische Kurve aus DEM (Copernicus DEM
-  GLO-30) -> durchgehende Pegelzeitreihe (urspruengliche Projektidee).
+### Reservoir-Polygone + Fuellwerte (CODE FERTIG, Lauf ausstehend)
+- **Problem geklaert:** HydroLAKES sitzt zwar korrekt am Damm (Enguri 0,58 km, Zhinvali
+  0,34 km), unterschaetzt aber stark (Enguri 4,86 km² geodaetisch vs. real ~13 km² - erfasst
+  nur das untere Becken, nicht die langen Talarme). Es gibt KEINEN besseren HydroLAKES-
+  Kandidaten (naechste Alternativen >9 km entfernt, winzig). Umwaehlen hilft nicht.
+- **Loesung (umgesetzt): Reservoir-Huelle aus den eigenen S1-Daten ableiten.** Neues
+  `derive_reservoir.py` (einmaliger S1-Durchlauf, RAM-schonend - nur ein Mosaik gleichzeitig):
+  pro Datum S1-B01_WTR-Mosaik (nur Voll-Coverage >= S1_FULL_COVER_PCT) auf festes Grid via
+  reproject_match, akkumuliert eine Wasser-Haeufigkeitskarte (water_obs/valid_obs). Persistente
+  Wassermaske = freq >= FREQ_THRESH (0,25); per scipy connected-component nur die mit dem
+  HydroLAKES-Seed (+ Damm-Pixel) verbundene Komponente behalten; Closing + fill_holes; ->
+  Polygon nach `static_data/reservoirs.geojson` (+ `{site}_s1_waterfreq.tif` zum Sichtpruefen).
+  Offline mit synthetischem Array getestet (verbundene Komponente korrekt, fremder Wasserkoerper
+  verworfen). ECHTER LAUF ueber Drive steht noch aus.
+- `download_reservoirs.py`: Output jetzt `reservoirs_hydrolakes.geojson` (nur noch SEED fuer
+  derive_reservoir). CRS-Warnung gefixt (distance() auf UTM 38N statt geografisch).
+- `extract_timeseries.py`: `reservoir_area_km2` = S1-Wasserpixel (1-5) **innerhalb** des
+  Reservoir-Polygons (rasterisiert pro Datum), getrennt von der AOI-Gesamtwasserflaeche. Spalte
+  erscheint automatisch sobald reservoirs.geojson existiert. Cache-Eintraege ohne die Spalte
+  gelten als stale und werden neu berechnet (kein --refresh noetig). Soll das ±1-2 km²
+  Rest-Rauschen beseitigen (orbit-/speckle-robuster).
+- **GELAUFEN + verifiziert (2026-06-01):** derive_reservoir.py -> reservoirs.geojson
+  (Enguri 9,86 km², Zhinvali 11,19 km²; in QGIS gegen waterfreq.tif geprueft, Form trifft
+  Talverlauf, laeuft nicht in Zufluesse aus -> FREQ_THRESH bei 0,25 bleibt). Dann
+  extract_timeseries.py --skip-hls -> reservoir_area_km2 in den S1-Parquets.
+- **Ergebnis:** Reservoir-Signal viel ruhiger als AOI-Gesamtwasser. Zhinvali 9,9x ruhiger
+  (8,42-10,91 km², klarer Jahresgang Absenkung Winter/Fruehjahr -> Auffuellung ab Mai),
+  Enguri 4,6x ruhiger. WICHTIG: Enguri-Reservoirflaeche aendert sich kaum (~1 km² Spanne),
+  weil Jvari ein tiefer Schluchtspeicher ist (steile Waende: grosser Pegelhub, kleine
+  Flaechenaenderung). -> Bei Enguri ist Flaeche ein schwacher Pegel-Proxy, der DEM-/
+  Uferlinien-Schritt (INFLOS) wird dort entscheidend; Zhinvali erzaehlt schon ueber Flaeche.
+- **Orbit-Verankerung (neu in extract_timeseries.py):** Pro AOI `s1_anchor` (ein Datum des
+  gewuenschten Orbits). Die S1-Sektion behaelt NUR Tage dieser 12-Tage-Phase (orbit_phase()),
+  laedt also nur diesen einen Orbit (~1/4 der Tage hier) statt alle. Anker = die bisher
+  genutzte Reihe: enguri 20240829 (49 volle Szenen), zhinvali 20240825 (52). Ersetzt die
+  fruehere Auto-Auswahl durch dedup (die je nach Coverage schwanken konnte). dedup bleibt als
+  Teil-Szenen-Filter. Cache-Rows werden vor dem Schreiben auf die Anker-Phase beschraenkt.
+- Reservoir-Polygon zusaetzlich in `app.py` auf der Karte darstellen (NAECHSTER kleiner Schritt).
+
+### Danach: Wasserpegel aus Flaeche + DEM (INFLOS-Ansatz statt Hypsometrie)
+- Statt hypsometrischer Flaeche->Pegel-Kurve den Pegel DIREKT messen (INFLOS, Poterek 2025,
+  Remote Sens. 17(2):329): an der Uferlinie ist die Wassertiefe ~0, also = DEM-Hoehe. Pro Datum
+  die S1-Uferlinie des Reservoirs mit Copernicus DEM GLO-30 verschneiden, Ufer-Hoehen sampeln,
+  |z|>1-Ausreisserfilter (INFLOS-Default 1.0) + Median -> absoluter Pegel (m ue. NN). Einfacher
+  als INFLOS, weil ein See eine flache Ebene ist. Zufluss-Stuetzpunkte via georgia_rivers.geojson
+  ausschliessen. Ergibt durchgehende Pegelzeitreihe (urspruengliche Projektidee).
 
 ### ERLEDIGT: S1 (SAR) reaktiviert
 - `download_s1.py` laedt alle MGRS-Kacheln (volle AOI), `extract_timeseries.py` mosaikiert

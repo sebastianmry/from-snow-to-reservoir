@@ -4,17 +4,19 @@ Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
 
 Downloads HydroLAKES v1.0 (global lake/reservoir polygons, HydroSHEDS family)
 and extracts the exact polygon of each study reservoir (Enguri, Zhinvali).
-These polygons let extract_timeseries.py measure water area INSIDE the
-reservoir footprint specifically, instead of all water in the AOI - the
-basis for later water-level estimation (area -> level via DEM hypsometry,
-combined with SAR for cloud-independent water extent).
+These polygons are only a SEED: HydroLAKES (derived from a ~2000 water mask)
+underestimates the reservoirs badly (Enguri 4.85 km2 vs. real ~13 km2 - it
+captures only the lower pool, not the long valley arms). derive_reservoir.py
+takes this seed and grows it to the true footprint from the actual S1 maximum
+water extent, writing the consumed static_data/reservoirs.geojson.
 
 HydroLAKES: Messager et al. 2016, WWF / McGill. CC-BY 4.0.
 
-Output: static_data/reservoirs.geojson
+Output: static_data/reservoirs_hydrolakes.geojson (seed for derive_reservoir.py)
 
-Run once before extract_timeseries.py:
+Run once, then derive_reservoir.py:
     python download_reservoirs.py
+    python derive_reservoir.py
 """
 
 import zipfile
@@ -35,7 +37,7 @@ LAKES_URL  = "https://data.hydrosheds.org/file/hydrolakes/HydroLAKES_polys_v10_s
 LAKES_ZIP  = STATIC_DIR / "hydrolakes.zip"
 LAKES_SHP_GLOB = "HydroLAKES_polys_v10.shp"
 
-OUTPUT_GEOJSON = STATIC_DIR / "reservoirs.geojson"
+OUTPUT_GEOJSON = STATIC_DIR / "reservoirs_hydrolakes.geojson"
 
 # AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat).
 # The dam point selects the correct reservoir polygon (the lake at the dam).
@@ -112,12 +114,16 @@ def extract_reservoirs(shp_path: Path):
             gdf = gdf.to_crs("EPSG:4326")
 
         dam = Point(dam_lon, dam_lat)
-        # Prefer the polygon that contains the dam point; else the nearest one
+        # Prefer the polygon that contains the dam point; else the nearest one.
         containing = gdf[gdf.contains(dam)]
         if not containing.empty:
             chosen = containing.copy()
         else:
-            nearest_idx = gdf.geometry.distance(dam).idxmin()
+            # Distance on a projected CRS (UTM 38N) - distance() on a geographic
+            # CRS warns and is inaccurate. The result index maps back to gdf.
+            utm = gdf.to_crs("EPSG:32638")
+            dam_utm = gpd.GeoSeries([dam], crs="EPSG:4326").to_crs("EPSG:32638").iloc[0]
+            nearest_idx = utm.geometry.distance(dam_utm).idxmin()
             chosen = gdf.loc[[nearest_idx]].copy()
 
         chosen["aoi"] = name
