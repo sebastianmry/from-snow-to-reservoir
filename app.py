@@ -557,20 +557,20 @@ with chart_col:
     tab1, tab2 = st.tabs(["Wasserflaeche", "Schnee & Eis"])
 
     with tab1:
-        st.plotly_chart(chart_water(df_s1), use_container_width=True)
+        st.plotly_chart(chart_water(df_s1), width="stretch")
 
     with tab2:
-        st.plotly_chart(chart_snow(df), use_container_width=True)
+        st.plotly_chart(chart_snow(df), width="stretch")
 
 # ── Data tables (collapsible) ─────────────────
 with st.expander("Rohdaten anzeigen"):
     st.caption("Wasser (DSWx-S1)")
     st.dataframe(
         df_s1.sort_values("date", ascending=False).reset_index(drop=True),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
     st.caption("Schnee / Gletscher (DSWx-HLS)")
     st.dataframe(
         df.sort_values("date", ascending=False).reset_index(drop=True),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
