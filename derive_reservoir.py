@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - Reservoir Footprint from S1 Water Extent
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 HydroLAKES underestimates the study reservoirs (Enguri 4.85 km2 vs. real
 ~13 km2 - it captures only the lower pool, not the long valley arms). This

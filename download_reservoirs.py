@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - HydroLAKES Reservoir Polygons
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Downloads HydroLAKES v1.0 (global lake/reservoir polygons, HydroSHEDS family)
 and extracts the exact polygon of each study reservoir (Enguri, Zhinvali).

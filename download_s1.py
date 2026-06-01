@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - Download OPERA DSWx-S1 to Google Drive
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Radar-based water product (Sentinel-1). Cloud-independent, used as the
 basis for a continuous reservoir water-level time series.

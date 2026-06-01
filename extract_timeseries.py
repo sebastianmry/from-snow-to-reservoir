@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - Time Series Extraction
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Reads clipped GeoTIFFs from Google Drive and computes per-date area statistics.
 Requires RGI v7 Region 12 shapefile in static_data/ for glacier stats.

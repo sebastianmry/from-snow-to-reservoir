@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - Streamlit Dashboard
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Stage 3 of the pipeline: interactive visualization of HLS timeseries data.
 
@@ -550,7 +550,7 @@ with st.sidebar:
 
     st.divider()
     st.caption(
-        "Von Sebastian Macherey · "
+        "© Sebastian Macherey · "
         "[GitHub](https://github.com/sebastianmry/from-snow-to-reservoir)"
     )
 

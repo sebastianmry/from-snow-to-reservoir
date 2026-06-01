@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - Shared download logic
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Common code used by download_hls.py and download_s1.py:
   1. earthaccess searches OPERA granules from NASA

@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - HydroRIVERS Download & Clip
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Downloads HydroRIVERS v10 (Europe and Middle East) from HydroSHEDS,
 clips it to the two AOI bounding boxes, and saves a compact GeoJSON
