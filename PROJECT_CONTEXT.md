@@ -146,6 +146,14 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (Enguri 9,86 km², Zhinvali 11,19 km²; in QGIS gegen waterfreq.tif geprueft, Form trifft
   Talverlauf, laeuft nicht in Zufluesse aus -> FREQ_THRESH bei 0,25 bleibt). Dann
   extract_timeseries.py --skip-hls -> reservoir_area_km2 in den S1-Parquets.
+- **Validierung gegen Literatur:** Zhinvali 11,19 km² vs. real ~11,5 km² = 97 % Treffer
+  (Punktlandung -> Methode bestaetigt). Enguri 9,86 km² vs. ~13 km² = ~76 %: die ~13 km² sind
+  die VOLLSTAU-Flaeche; unser Wert ist die im Zeitraum Aug2024-Mai2026 regelmaessig (>=25 %)
+  ueberflutete Flaeche. Max gemessene reservoir_area_km2 bei Enguri = 8,09 km² (an KEINEM Tag
+  hoeher) -> Enguri war durchgehend deutlich abgesenkt, Vollstau nie erreicht; auch FREQ=0,10
+  gibt nur 10,39 km² (obere Talarme im Zeitfenster nie nass). Differenz ist also REALE
+  Absenkung, kein Fehler. Fuer Bericht so formulieren: "regelmaessig ueberflutete Flaeche im
+  Beobachtungszeitraum", nicht "Stauraum bei Vollstau". Methodisch sauber nachweisbar.
 - **Ergebnis:** Reservoir-Signal viel ruhiger als AOI-Gesamtwasser. Zhinvali 9,9x ruhiger
   (8,42-10,91 km², klarer Jahresgang Absenkung Winter/Fruehjahr -> Auffuellung ab Mai),
   Enguri 4,6x ruhiger. WICHTIG: Enguri-Reservoirflaeche aendert sich kaum (~1 km² Spanne),
