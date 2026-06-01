@@ -21,7 +21,8 @@ Georgiens Stromversorgung haengt zu etwa 80 % von der Wasserkraft ab. Saisonale 
 - **OPERA DSWx-S1 (Level-3):** Radar-basierte Wasserklassifikation (B01_WTR), wolkenunabhaengig. Auf einen konsistenten relativen Orbit reduziert (~12-Tage-Reihe).
 - **Randolph Glacier Inventory v7 (RGI), Region 12:** Gletscher-Polygone fuer den Kaukasus (NSIDC, via `download_glaciers.py`)
 - **HydroRIVERS v10:** Flussnetz (HydroSHEDS), gefiltert auf das Einzugsgebiet oberhalb des Staudamms (via `download_rivers.py`)
-- **HydroLAKES v1.0:** Exakte Stausee-Polygone (HydroSHEDS), via `download_reservoirs.py`
+- **HydroLAKES v1.0:** Stausee-Polygone (HydroSHEDS) als *Seed* via `download_reservoirs.py`. HydroLAKES unterschaetzt die Seen stark (Enguri 4,9 km² statt real ~13) — daher nur Ansatzpunkt; der echte Footprint wird per `derive_reservoir.py` aus der S1-Wasserausdehnung abgeleitet.
+- **Copernicus DEM GLO-30:** (geplant) Geländemodell fuer die Wasserstands-Ableitung (Uferlinie x Höhe)
 
 Zeitraum: August 2024 bis heute
 
@@ -42,7 +43,8 @@ app.py (Streamlit)       # Interaktive Karte (Folium) + Zeitreihen (Plotly)
 Statische Geodaten (einmalig):
   download_glaciers.py     # RGI v7 Region 12 Gletscherpolygone -> static_data/
   download_rivers.py       # HydroRIVERS, Einzugsgebiet oberhalb Staudamm -> static_data/
-  download_reservoirs.py   # HydroLAKES, exakte Stausee-Polygone -> static_data/
+  download_reservoirs.py   # HydroLAKES Stausee-Seed -> static_data/
+  derive_reservoir.py      # S1-Wasserausdehnung -> echter Stausee-Footprint -> static_data/
 ```
 
 Drive-Ordnerstruktur: `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`
@@ -53,7 +55,11 @@ Stausee und Gletscher koennen in unterschiedlichen MGRS-Kacheln liegen (z.B. Zhi
 
 ### S1-Orbit-Dedup
 
-SAR-Wasserklassifikation haengt von der Aufnahmegeometrie ab (Layover/Shadow je nach auf-/absteigendem Orbit). Mehrere Orbits in einer Zeitreihe erzeugen einen kuenstlichen Saegezahn. `extract_timeseries.py` reduziert S1 daher auf **einen** konsistenten relativen Orbit: partielle Szenen (< 90% AOI) werden verworfen, die vollflaechigen nach 12-Tage-Wiederholphase gruppiert, und der Track behalten, der den Zeitraum am besten abdeckt. Ergebnis: saubere, geometrisch konsistente ~12-Tage-Reihe.
+SAR-Wasserklassifikation haengt von der Aufnahmegeometrie ab (Layover/Shadow je nach auf-/absteigendem Orbit). Mehrere Orbits in einer Zeitreihe erzeugen einen kuenstlichen Saegezahn. `extract_timeseries.py` reduziert S1 daher auf **einen** konsistenten relativen Orbit. Statt automatischer Auswahl ist der Orbit pro AOI **fest verankert** (`s1_anchor`: Enguri 2024-08-29, Zhinvali 2024-08-25 — die durchgehend vollflaechig abgedeckten Tracks): es werden nur Tage dieser 12-Tage-Wiederholphase (`ordinal % 12`) behalten, sodass auch nur dieser Orbit heruntergeladen wird (~1/4 der Tage statt alle). Partielle Szenen (< 90% AOI) werden zusaetzlich verworfen. Ergebnis: saubere, geometrisch konsistente ~12-Tage-Reihe.
+
+### Reservoir-Footprint aus S1
+
+Die `reservoir_area_km2` misst Wasser **nur innerhalb des Stausees**, getrennt von der AOI-weiten Wasserflaeche (die auch Fluesse enthaelt). Da HydroLAKES die Seen stark unterschaetzt, leitet `derive_reservoir.py` den Footprint aus den eigenen S1-Daten ab: ueber alle vollflaechigen Szenen wird eine **Wasser-Haeufigkeitskarte** akkumuliert; Pixel mit Wasser in >= 25% der Aufnahmen (occurrence-basiert, vgl. Pekel et al. 2016) bilden den Stausee, reduziert auf die mit dem HydroLAKES-Seed verbundene Komponente. Der Schwellenwert ist sensitivitaetsgeprueft (Flaeche aendert sich nur ±5–9% ueber 0,10–0,50, kein Fluss-Leck). Ergebnis: Enguri 9,86 km², Zhinvali 11,19 km² (vs. real ~13 / ~11,5). Das Reservoir-Signal ist ~5x (Enguri) bis ~10x (Zhinvali) ruhiger als die AOI-Gesamtwasserflaeche und zeigt den saisonalen Pegelgang. Hinweis: Enguri ist ein tiefer Schluchtspeicher — grosser Pegelhub bei kleiner Flaechenaenderung; dort wird kuenftig der DEM-/Uferlinien-Schritt entscheidend.
 
 ### Cache & Resume
 
@@ -87,6 +93,14 @@ Optisches HLS ueber-detektiert Wasser stark (Geländeschatten/Eis werden als Was
 | `cloud_cover_percent` | Anteil bewoelkter Pixel im AOI |
 | `valid_px_pct` | Anteil valider (nicht-NoData) Pixel im AOI |
 
+S1-Reihe (`*_s1_timeseries.parquet`):
+
+| Spalte | Beschreibung |
+|--------|-------------|
+| `water_km2` | Offene Wasserflaeche im gesamten AOI (DSWx-Klassen 1-5) aus Radar — das Wasser-Signal |
+| `reservoir_area_km2` | Wasserflaeche **nur im Stausee** (S1-abgeleiteter Footprint), ohne Fluesse — ruhiger, pegelrelevant |
+| `valid_px_pct` | Anteil valider Pixel im AOI |
+
 ## Setup
 
 ```bash
@@ -108,11 +122,12 @@ NASA Earthdata Login:
 # 1. Statische Geodaten einmalig laden
 python download_glaciers.py     # RGI v7 Gletscher (NSIDC, NASA-Login)
 python download_rivers.py       # HydroRIVERS Einzugsgebiet (oeffentlich)
-python download_reservoirs.py   # HydroLAKES Stausee-Polygone (oeffentlich)
+python download_reservoirs.py   # HydroLAKES Stausee-Seed (oeffentlich)
 
 # 2. Satellitendaten herunterladen und prozessieren
 python download_hls.py          # OPERA DSWx-HLS (optisch) -> Google Drive
 python download_s1.py           # OPERA DSWx-S1 (Radar)    -> Google Drive
+python derive_reservoir.py      # S1-Wasserausdehnung -> echter Stausee-Footprint (einmalig nach S1-Download)
 python extract_timeseries.py    # Mosaik + Zeitreihen -> *_timeseries.parquet (HLS) + *_s1_timeseries.parquet (S1)
                                 # Optionen: --skip-s1 / --skip-hls / --refresh
 
@@ -127,16 +142,17 @@ streamlit run app.py
 | `download_hls.py` | OPERA DSWx-HLS (optisch, nur B01_WTR — Wolke ueber Flag 253) nach Google Drive laden |
 | `download_s1.py` | OPERA DSWx-S1 (Radar, B01_WTR) nach Google Drive laden |
 | `download_common.py` | Gemeinsame Logik beider Downloads: Auth, Drive, Footprint-Vorfilter, Clipping, MGRS-Namen (wird nicht direkt ausgefuehrt) |
-| `extract_timeseries.py` | Pro Datum Kachel-Mosaik bilden, S1-Orbit-Dedup, mit RGI-Gletschern verschneiden, Zeitreihen als CSV + Parquet speichern (mit Per-Datum-Cache) |
+| `extract_timeseries.py` | Pro Datum Kachel-Mosaik bilden, S1 auf verankerten Orbit filtern, mit RGI-Gletschern + Stausee-Footprint verschneiden (`reservoir_area_km2`), Zeitreihen als CSV + Parquet speichern (mit Per-Datum-Cache) |
 | `probe_orbits.py` | Diagnose (read-only): S1-Orbit-Metadaten pruefen (Satellit, Phase) — validiert das Orbit-Dedup |
 | `download_glaciers.py` | RGI v7 Region 12 Gletscherpolygone von NSIDC laden (via earthaccess) |
 | `download_rivers.py` | HydroRIVERS laden, auf Einzugsgebiet oberhalb des Staudamms filtern (Fliessnetz-Topologie), auf AOI clippen |
-| `download_reservoirs.py` | HydroLAKES laden, exakte Stausee-Polygone extrahieren |
+| `download_reservoirs.py` | HydroLAKES laden, Stausee-Seed-Polygon extrahieren (Ansatzpunkt fuer derive_reservoir.py) |
+| `derive_reservoir.py` | Echten Stausee-Footprint aus S1-Wasserhaeufigkeit ableiten (occurrence-basiert, seed-verankert) -> reservoirs.geojson |
 | `app.py` | Streamlit-Dashboard: Folium-Karte (AOI, Gletscher, Fluesse, Staudamm) + Plotly-Zeitreihen |
 
 ## Tech Stack
 
-Python 3.11 | earthaccess | rasterio | rioxarray | geopandas | shapely | pydrive2 | pandas | pyarrow | tqdm | streamlit | plotly | folium | streamlit-folium
+Python 3.11 | earthaccess | rasterio | rioxarray | geopandas | shapely | scipy | pydrive2 | pandas | pyarrow | tqdm | streamlit | plotly | folium | streamlit-folium
 
 ## Lizenz
 

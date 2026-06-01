@@ -211,11 +211,30 @@ def load_glaciers(clip_box: tuple) -> gpd.GeoDataFrame | None:
         return None
 
 
+@st.cache_data(show_spinner=False)
+def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
+    """S1-derived reservoir footprint polygon (derive_reservoir.py)."""
+    path = STATIC_DIR / "reservoirs.geojson"
+    if not path.exists():
+        return None
+    try:
+        gdf = gpd.read_file(path)
+        gdf = gdf[gdf["aoi"] == aoi_key]
+        if gdf.empty:
+            return None
+        if gdf.crs and gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        return gdf
+    except Exception:
+        return None
+
+
 # ─────────────────────────────────────────────
 # MAP
 # ─────────────────────────────────────────────
 
-def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None) -> folium.Map:
+def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None,
+              reservoir: gpd.GeoDataFrame | None = None) -> folium.Map:
     min_lon, min_lat, max_lon, max_lat = aoi["clip_box"]
     center_lat = (min_lat + max_lat) / 2
     center_lon = (min_lon + max_lon) / 2
@@ -264,6 +283,22 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             },
         ).add_to(m)
 
+    # Reservoir footprint (S1-derived) - the actual lake polygon
+    if reservoir is not None and not reservoir.empty:
+        area = reservoir.iloc[0].get("area_km2")
+        tip = f"Stausee-Footprint (S1)" + (f": {area:.2f} km²" if area is not None else "")
+        folium.GeoJson(
+            reservoir.__geo_interface__,
+            name="Stausee-Footprint (S1)",
+            style_function=lambda _: {
+                "fillColor": "#2980b9",
+                "color": "#1a5276",
+                "weight": 1.5,
+                "fillOpacity": 0.55,
+            },
+            tooltip=tip,
+        ).add_to(m)
+
     # Dam marker
     dam_lon, dam_lat = aoi["dam"]
     folium.Marker(
@@ -282,22 +317,40 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
 # ─────────────────────────────────────────────
 
 def chart_water(df: pd.DataFrame) -> go.Figure:
-    """Water surface from DSWx-S1 (column water_km2). SAR is cloud-independent,
-    so the series is gap-free (no cloud shading needed)."""
+    """Water surface from DSWx-S1. SAR is cloud-independent, so the series is
+    gap-free. Shows the reservoir-only footprint (reservoir_area_km2) as the
+    main, level-relevant signal and the AOI-wide water (water_km2, incl. rivers)
+    as a fainter reference line."""
     fig = go.Figure()
 
+    has_res = "reservoir_area_km2" in df.columns and df["reservoir_area_km2"].notna().any()
+
+    # AOI-wide water (includes rivers/other) - reference, drawn fainter
     fig.add_trace(go.Scatter(
         x=df["date"],
         y=df["water_km2"],
         mode="lines+markers",
-        name="Wasserflaeche (S1/Radar)",
-        line=dict(color="#2980b9", width=2),
-        marker=dict(size=4),
-        hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra></extra>",
+        name="AOI-Wasser gesamt (inkl. Fluesse)",
+        line=dict(color="#aab7c4", width=1.5, dash="dot"),
+        marker=dict(size=3),
+        hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>AOI gesamt</extra>",
     ))
+
+    # Reservoir-only footprint - the headline signal
+    if has_res:
+        fig.add_trace(go.Scatter(
+            x=df["date"],
+            y=df["reservoir_area_km2"],
+            mode="lines+markers",
+            name="Stausee-Flaeche (Footprint)",
+            line=dict(color="#1a5276", width=2.5),
+            marker=dict(size=4),
+            hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Stausee</extra>",
+        ))
 
     fig.update_layout(
         title="Stausee-Wasserflaeche (DSWx-S1, ~12-Tage)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         xaxis_title=None,
         yaxis_title="Flaeche (km²)",
         hovermode="x unified",
@@ -427,7 +480,17 @@ latest_snow = (
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    if latest_w is not None:
+    has_res = (latest_w is not None and "reservoir_area_km2" in df_s1.columns
+               and pd.notna(latest_w.get("reservoir_area_km2")))
+    if has_res:
+        max_res = df_s1["reservoir_area_km2"].max()
+        st.metric(
+            "Stausee-Flaeche (S1, aktuell)",
+            f"{latest_w['reservoir_area_km2']:.2f} km²",
+            delta=f"Max: {max_res:.2f} km²",
+            delta_color="off",
+        )
+    elif latest_w is not None:
         st.metric(
             "Wasserflaeche (S1, aktuell)",
             f"{latest_w['water_km2']:.2f} km²",
@@ -470,15 +533,23 @@ map_col, chart_col = st.columns([1, 1], gap="large")
 with map_col:
     st.subheader("Untersuchungsgebiet")
     with st.spinner("Lade Kartendaten..."):
-        rivers   = load_rivers(aoi["key"])
-        glaciers = load_glaciers(tuple(aoi["clip_box"]))
+        rivers    = load_rivers(aoi["key"])
+        glaciers  = load_glaciers(tuple(aoi["clip_box"]))
+        reservoir = load_reservoir(aoi["key"])
 
+    caps = []
     if glaciers is not None:
-        st.caption(f"{len(glaciers)} RGI v7 Gletscherpolygone geladen")
+        caps.append(f"{len(glaciers)} RGI v7 Gletscherpolygone")
     else:
-        st.caption("RGI-Gletscherdaten nicht gefunden - extract_timeseries.py zuerst ausfuehren")
+        caps.append("RGI-Gletscherdaten nicht gefunden")
+    if reservoir is not None:
+        res_area = reservoir.iloc[0].get("area_km2")
+        caps.append(f"Stausee-Footprint (S1){f': {res_area:.2f} km²' if res_area is not None else ''}")
+    else:
+        caps.append("Stausee-Footprint nicht gefunden - derive_reservoir.py ausfuehren")
+    st.caption(" · ".join(caps))
 
-    m = build_map(aoi, rivers, glaciers)
+    m = build_map(aoi, rivers, glaciers, reservoir)
     st_folium(m, height=430, use_container_width=True)
 
 with chart_col:
