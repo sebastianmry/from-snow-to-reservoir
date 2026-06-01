@@ -158,8 +158,8 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (8,42-10,91 km², klarer Jahresgang Absenkung Winter/Fruehjahr -> Auffuellung ab Mai),
   Enguri 4,6x ruhiger. WICHTIG: Enguri-Reservoirflaeche aendert sich kaum (~1 km² Spanne),
   weil Jvari ein tiefer Schluchtspeicher ist (steile Waende: grosser Pegelhub, kleine
-  Flaechenaenderung). -> Bei Enguri ist Flaeche ein schwacher Pegel-Proxy, der DEM-/
-  Uferlinien-Schritt (INFLOS) wird dort entscheidend; Zhinvali erzaehlt schon ueber Flaeche.
+  Flaechenaenderung). -> Bei Enguri ist die Flaeche ein schwacher Speicher-Proxy; ein absoluter
+  Pegel waere noetig, ist aber mangels Bathymetrie nicht ableitbar (siehe Abschnitt unten).
 - **Orbit-Verankerung (neu in extract_timeseries.py):** Pro AOI `s1_anchor` (ein Datum des
   gewuenschten Orbits). Die S1-Sektion behaelt NUR Tage dieser 12-Tage-Phase (orbit_phase()),
   laedt also nur diesen einen Orbit (~1/4 der Tage hier) statt alle. Anker = die bisher
@@ -172,28 +172,26 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   Headless mit streamlit AppTest geprueft (beide AOIs, 0 Exceptions). Bekannt/offen: das ganze
   Dashboard nutzt noch `use_container_width` (deprecated, nur Warnung) - spaeter modernisieren.
 
-### Wasserpegel aus Uferlinie + DEM (INFLOS) - CODE FERTIG, Re-Lauf ausstehend
-- `download_dem.py` (NEU): Copernicus DEM GLO-30 Kacheln pro AOI vom oeffentlichen
-  AWS-Bucket (kein Login), gemerged + auf AOI geclippt -> `static_data/{aoi}_dem.tif`
-  (Enguri 28-4642 m, Zhinvali 0-5025 m).
-- `extract_timeseries.py`: `shoreline_level()` + `reservoir_level_m` in der S1-Sektion.
-  Pro Datum: Uferlinie = Reservoir-Wasserpixel, die an (trockenes) Land grenzen ->
-  DEM-Hoehen sampeln (xr.sel nearest) -> |z|>1-Filter (INFLOS-Default) -> Median = Pegel.
-  Params: LEVEL_MIN_SHORE_PX=30, LEVEL_Z_THRESH=1.0. Spalte erscheint, wenn DEM da ist;
-  Cache-Stale-Logik recomputed Daten ohne reservoir_level_m.
-- VALIDIERUNG (offline, Voll-Pool): Zhinvali 805,5 m ~ reales Stauziel ~810 m (Punktlandung!),
-  Enguri 464 m. **Zhinvali max. 75 m tief** (User) -> Grund ~730 m, Pegel-Band ~730-810 m,
-  Jahres-Hub muss << 75 m sein. Das ist die Sanity-Check-Grenze fuer den Re-Lauf.
-- AUSSTEHEND: `python download_dem.py` (erledigt) -> `python extract_timeseries.py --skip-hls`
-  (Re-Lauf des verankerten Orbits, ~10-15 min) fuellt reservoir_level_m. Danach Pegel in app.py.
-
-### (Hintergrund) Wasserpegel-Methodik: INFLOS-Ansatz statt Hypsometrie
-- Statt hypsometrischer Flaeche->Pegel-Kurve den Pegel DIREKT messen (INFLOS, Poterek 2025,
-  Remote Sens. 17(2):329): an der Uferlinie ist die Wassertiefe ~0, also = DEM-Hoehe. Pro Datum
-  die S1-Uferlinie des Reservoirs mit Copernicus DEM GLO-30 verschneiden, Ufer-Hoehen sampeln,
-  |z|>1-Ausreisserfilter (INFLOS-Default 1.0) + Median -> absoluter Pegel (m ue. NN). Einfacher
-  als INFLOS, weil ein See eine flache Ebene ist. Zufluss-Stuetzpunkte via georgia_rivers.geojson
-  ausschliessen. Ergibt durchgehende Pegelzeitreihe (urspruengliche Projektidee).
+### Wasserpegel (DEM/INFLOS) - GETESTET und VERWORFEN (2026-06-01)
+Der INFLOS-Pegelansatz (S1-Uferlinie x Copernicus DEM GLO-30) wurde implementiert,
+getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
+- **Grund:** Das Copernicus DEM (TanDEM-X 2011-2015) hat beide Stauseen ALS Wasser
+  aufgenommen und die Oberflaeche eingeebnet -> **keine Bathymetrie**. Belegt mit DEM-Werten
+  im Footprint: Zhinvali komplett flach 805,5 m (p5=p95=805,5; std 1,7) -> Pegel konstant
+  805,5 fuer JEDES Datum (degeneriert). Enguri Boden bei 425 m + echte Schluchtwaende darueber
+  -> nur 425-440 m, Tiefststaende zensiert. Das ist INFLOS-Annahme D (Bathymetrie nicht
+  ableitbar); INFLOS ist fuer Ueberflutungen auf trockenem Gelaende, nicht fuer aufgestaute Seen.
+- **Altimetrie geprueft (Alternative fuer echten Pegel):** ICESat-2 ATL13 via earthaccess -
+  die bbox-Suche matcht nur die grobe Orbit-Ausdehnung; die gesampelten Paesse kreuzen die AOI
+  gar nicht (0 Punkte in der Region). Kleine Bergstauseen werden von ICESat-2/Jason/Sentinel-3
+  kaum getroffen. Verworfen (echtes Track-Subsetting via icepyx waere noetig, unsicherer Ertrag).
+- **Entfernt:** download_dem.py geloescht; shoreline_level/load_dem/dem_has_relief und
+  reservoir_level_m aus extract_timeseries.py; Pegel-Tab aus app.py. `reservoir_area_km2`
+  bleibt der Speicher-Indikator. Re-Lauf `extract_timeseries.py --skip-hls` (gecacht, schnell)
+  regeneriert die Parquets ohne die Pegel-Spalte.
+- **Fazit fuer Bericht:** Speicher wird ueber die S1-FLAECHE ueberwacht. Absoluter Pegel ist mit
+  frei verfuegbaren DEMs nicht ableitbar (keine Bathymetrie); Altimetrie deckt diese kleinen
+  Bergstauseen nicht ab. Das ist eine dokumentierte Datengrenze, kein Methodenfehler.
 
 ### ERLEDIGT: S1 (SAR) reaktiviert
 - `download_s1.py` laedt alle MGRS-Kacheln (volle AOI), `extract_timeseries.py` mosaikiert

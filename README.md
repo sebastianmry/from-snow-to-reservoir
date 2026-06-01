@@ -23,7 +23,6 @@ Georgiens Stromversorgung haengt zu etwa 80 % von der Wasserkraft ab. Saisonale 
 - **Randolph Glacier Inventory v7 (RGI), Region 12:** Gletscher-Polygone fuer den Kaukasus (NSIDC, via `download_glaciers.py`)
 - **HydroRIVERS v10:** Flussnetz (HydroSHEDS), gefiltert auf das Einzugsgebiet oberhalb des Staudamms (via `download_rivers.py`)
 - **HydroLAKES v1.0:** Stausee-Polygone (HydroSHEDS) als *Seed* via `download_reservoirs.py`. HydroLAKES unterschaetzt die Seen stark (Enguri 4,9 km² statt real ~13) — daher nur Ansatzpunkt; der echte Footprint wird per `derive_reservoir.py` aus der S1-Wasserausdehnung abgeleitet.
-- **Copernicus DEM GLO-30:** (geplant) Geländemodell fuer die Wasserstands-Ableitung (Uferlinie x Höhe)
 
 Zeitraum: August 2024 bis heute
 
@@ -60,7 +59,7 @@ SAR-Wasserklassifikation haengt von der Aufnahmegeometrie ab (Layover/Shadow je 
 
 ### Reservoir-Footprint aus S1
 
-Die `reservoir_area_km2` misst Wasser **nur innerhalb des Stausees**, getrennt von der AOI-weiten Wasserflaeche (die auch Fluesse enthaelt). Da HydroLAKES die Seen stark unterschaetzt, leitet `derive_reservoir.py` den Footprint aus den eigenen S1-Daten ab: ueber alle vollflaechigen Szenen wird eine **Wasser-Haeufigkeitskarte** akkumuliert; Pixel mit Wasser in >= 25% der Aufnahmen (occurrence-basiert, vgl. Pekel et al. 2016) bilden den Stausee, reduziert auf die mit dem HydroLAKES-Seed verbundene Komponente. Der Schwellenwert ist sensitivitaetsgeprueft (Flaeche aendert sich nur ±5–9% ueber 0,10–0,50, kein Fluss-Leck). Ergebnis: Enguri 9,86 km², Zhinvali 11,19 km² (vs. real ~13 / ~11,5). Das Reservoir-Signal ist ~5x (Enguri) bis ~10x (Zhinvali) ruhiger als die AOI-Gesamtwasserflaeche und zeigt den saisonalen Pegelgang. Hinweis: Enguri ist ein tiefer Schluchtspeicher — grosser Pegelhub bei kleiner Flaechenaenderung; dort wird kuenftig der DEM-/Uferlinien-Schritt entscheidend.
+Die `reservoir_area_km2` misst Wasser **nur innerhalb des Stausees**, getrennt von der AOI-weiten Wasserflaeche (die auch Fluesse enthaelt). Da HydroLAKES die Seen stark unterschaetzt, leitet `derive_reservoir.py` den Footprint aus den eigenen S1-Daten ab: ueber alle vollflaechigen Szenen wird eine **Wasser-Haeufigkeitskarte** akkumuliert; Pixel mit Wasser in >= 25% der Aufnahmen (occurrence-basiert, vgl. Pekel et al. 2016) bilden den Stausee, reduziert auf die mit dem HydroLAKES-Seed verbundene Komponente. Der Schwellenwert ist sensitivitaetsgeprueft (Flaeche aendert sich nur ±5–9% ueber 0,10–0,50, kein Fluss-Leck). Ergebnis: Enguri 9,86 km², Zhinvali 11,19 km² (vs. real ~13 / ~11,5). Das Reservoir-Signal ist ~5x (Enguri) bis ~10x (Zhinvali) ruhiger als die AOI-Gesamtwasserflaeche und zeigt den saisonalen Speichergang. Hinweis: Enguri ist ein tiefer Schluchtspeicher — grosser Pegelhub bei kleiner Flaechenaenderung. Ein absoluter Wasserstand liesse sich daraus nur mit Bathymetrie ableiten; frei verfuegbare DEMs (Copernicus GLO-30) haben den Stausee als flache Wasserflaeche aufgenommen (keine Bathymetrie), und Satelliten-Altimetrie deckt diese kleinen Bergstauseen nicht ab. Daher wird der Speicher ueber die Flaeche ueberwacht, nicht ueber einen absoluten Pegel.
 
 ### Cache & Resume
 
@@ -80,7 +79,7 @@ Vor dem Download wird pro Datum die Vereinigung der Kachel-Footprints gegen das 
 
 ### Wasser aus S1, Schnee aus HLS
 
-Optisches HLS ueber-detektiert Wasser stark (Geländeschatten/Eis werden als Wasser fehlklassifiziert) — auch an wolkenfreien Tagen. Daher: **Wasserflaeche/Pegel ausschliesslich aus S1** (Radar, wolkenunabhaengig, robust), **Schnee/Gletscher aus HLS**. Die beiden Sensoren ergaenzen sich: HLS fuer das Schneesignal, S1 fuer die lueckenlose Wasser-Zeitreihe.
+Optisches HLS ueber-detektiert Wasser stark (Geländeschatten/Eis werden als Wasser fehlklassifiziert) — auch an wolkenfreien Tagen. Daher: **Wasserflaeche ausschliesslich aus S1** (Radar, wolkenunabhaengig, robust), **Schnee/Gletscher aus HLS**. Die beiden Sensoren ergaenzen sich: HLS fuer das Schneesignal, S1 fuer die lueckenlose Wasser-Zeitreihe.
 
 ## Berechnete Metriken (pro Datum und AOI)
 
