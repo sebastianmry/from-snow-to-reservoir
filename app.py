@@ -315,6 +315,16 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # Fit exactly to the AOI so it is always centered regardless of AOI size
     m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
+    # Reservoir centre (used for both the marker and the name label). The label
+    # is nudged slightly north of centre so it does not overlap the marker.
+    res_center = None
+    res_label_anchor = None
+    if reservoir is not None and not reservoir.empty:
+        c = reservoir.geometry.union_all().centroid
+        res_center = (c.y, c.x)
+        b = reservoir.total_bounds  # minx, miny, maxx, maxy
+        res_label_anchor = (c.y + (b[3] - b[1]) * 0.12, c.x)
+
     # AOI bounding box
     folium.Rectangle(
         bounds=[[min_lat, min_lon], [max_lat, max_lon]],
@@ -354,13 +364,9 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             },
         ).add_to(m)
 
-        # River-name label - centered on the reservoir (the river runs through
-        # it), falling back to the main-stem midpoint if no reservoir polygon.
-        if reservoir is not None and not reservoir.empty:
-            c = reservoir.geometry.union_all().centroid
-            anchor = (c.y, c.x)
-        else:
-            anchor = river_label_point(rivers)
+        # River-name label - just above the reservoir centre (the river runs
+        # through it), falling back to the main-stem midpoint if no reservoir.
+        anchor = res_label_anchor if res_label_anchor else river_label_point(rivers)
         name = MAIN_RIVER.get(aoi["key"])
         if anchor and name:
             folium.Marker(
@@ -393,10 +399,12 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             tooltip=tip,
         ).add_to(m)
 
-    # Dam marker - blue water droplet
+    # Blue water droplet - placed at the reservoir centre (falls back to the
+    # actual dam point if no reservoir polygon is available).
     dam_lon, dam_lat = aoi["dam"]
+    marker_loc = list(res_center) if res_center else [dam_lat, dam_lon]
     folium.Marker(
-        location=[dam_lat, dam_lon],
+        location=marker_loc,
         popup=folium.Popup(aoi["dam_label"], max_width=200),
         tooltip=aoi["dam_label"],
         icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
