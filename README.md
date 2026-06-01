@@ -1,7 +1,7 @@
 # FROM SNOW TO RESERVOIR
 ### Live-Monitoring von Schneeschmelze, Gletschern und Talsperren im Kaukasus
 
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey | Matrikelnummer 112741
+Von Sebastian Macherey · [github.com/sebastianmry/from-snow-to-reservoir](https://github.com/sebastianmry/from-snow-to-reservoir)
 
 ---
 
