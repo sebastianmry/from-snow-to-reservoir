@@ -507,6 +507,33 @@ def chart_snow(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def chart_level(df: pd.DataFrame) -> go.Figure:
+    """Reservoir water level (m a.s.l.) from the S1 shoreline x Copernicus DEM
+    (INFLOS). Only shown where the DEM has real relief in the footprint."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["date"],
+        y=df["reservoir_level_m"],
+        mode="lines+markers",
+        name="Pegel",
+        line=dict(color="#1a5276", width=2.5),
+        marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.1f} m ü. NN</b><extra></extra>",
+    ))
+    fig.update_layout(
+        title="Stausee-Wasserstand (S1-Uferlinie × Copernicus DEM)",
+        xaxis_title=None,
+        yaxis_title="Pegel (m ü. NN)",
+        hovermode="x unified",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(t=40, b=20, l=60, r=20),
+        xaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
+        yaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
+    )
+    return fig
+
+
 # ─────────────────────────────────────────────
 # APP
 # ─────────────────────────────────────────────
@@ -650,13 +677,26 @@ with map_col:
 
 with chart_col:
     st.subheader("Zeitreihen")
-    tab1, tab2 = st.tabs(["Wasserflaeche", "Schnee & Eis"])
+    has_level = ("reservoir_level_m" in df_s1.columns
+                 and df_s1["reservoir_level_m"].notna().any())
+    tab_names = ["Wasserflaeche", "Schnee & Eis"] + (["Pegel"] if has_level else [])
+    tabs = st.tabs(tab_names)
 
-    with tab1:
+    with tabs[0]:
         st.plotly_chart(chart_water(df_s1), width="stretch")
 
-    with tab2:
+    with tabs[1]:
         st.plotly_chart(chart_snow(df), width="stretch")
+
+    if has_level:
+        with tabs[2]:
+            st.plotly_chart(chart_level(df_s1), width="stretch")
+            st.caption(
+                "Pegel aus S1-Uferlinie × Copernicus DEM (INFLOS). Hinweis: Das DEM "
+                "enthält keine Bathymetrie – Tiefststände unterhalb der DEM-Zeit-"
+                "Wasserfläche sind zensiert (Boden ~425 m). Für Stauseen mit flachem "
+                "DEM (Zhinvali) ist kein absoluter Pegel ableitbar; dort dient die Fläche."
+            )
 
 # ── Data tables (collapsible) ─────────────────
 with st.expander("Rohdaten anzeigen"):
