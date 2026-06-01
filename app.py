@@ -239,12 +239,13 @@ def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
 # ─────────────────────────────────────────────
 
 def _river_weight(ord_flow) -> float:
-    """Line width from flow order (lower order = larger river = thicker)."""
+    """Line width from flow order (lower order = larger river = thicker).
+    Gradation keeps big rivers prominent and small brooks (order 7-8) thin."""
     try:
         o = int(ord_flow)
     except (TypeError, ValueError):
         o = 6
-    return max(1.0, (8 - o) * 0.9)
+    return min(4.0, max(0.6, (9 - o) * 0.7))
 
 
 def river_label_point(features: list[dict]) -> tuple[float, float] | None:

@@ -46,11 +46,12 @@ AOIS = {
 }
 
 # ORD_FLOW is the logarithmic flow-order class (lower value = larger river).
-# Keep classes <= this threshold. 7 includes the smaller glacial-fed tributaries
-# (one step below the main stems) while still dropping the tiniest headwater
-# trickles (8-9). The upstream-of-dam filter already restricts to the reservoir
-# catchment, i.e. segments at or above reservoir elevation.
-MAX_FLOW_ORDER = 7
+# Keep classes <= this threshold. 8 includes the small glacial-fed brooks
+# (drawn thin in the dashboard, see _river_weight); only the very smallest
+# headwater trickles (9+) are dropped. The upstream-of-dam filter already
+# restricts to the reservoir catchment, i.e. segments at or above reservoir
+# elevation.
+MAX_FLOW_ORDER = 8
 
 
 # ─────────────────────────────────────────────
