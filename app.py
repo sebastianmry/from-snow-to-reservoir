@@ -688,7 +688,10 @@ with st.expander("Rohdaten anzeigen"):
         width="stretch", hide_index=True,
     )
     st.caption("Schnee / Gletscher (DSWx-HLS)")
+    # Drop the optical HLS water column: it massively over-detects water
+    # (terrain shadow / ice misclassified); the water signal comes from S1.
+    df_hls_view = df.drop(columns=["water_area_km2"], errors="ignore")
     st.dataframe(
-        df.sort_values("date", ascending=False).reset_index(drop=True),
+        df_hls_view.sort_values("date", ascending=False).reset_index(drop=True),
         width="stretch", hide_index=True,
     )
