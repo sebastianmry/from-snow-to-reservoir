@@ -114,6 +114,21 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (`derive_reservoir.py`) + `reservoir_area_km2` in den S1-Parquets, Orbit fest verankert.
   Details siehe Abschnitt "Reservoir-Polygone + Fuellwerte" unten.
 
+### GEPLANT (vom User angeregt 2026-06-01): AOI ans Einzugsgebiet anpassen (braucht Neu-Download!)
+- Beobachtung: Die rechteckigen clip_box-AOIs haben irrelevante Bereiche (Enguri Suedwesten leer,
+  Zhinvali Sueden zu viel) und schneiden evtl. relevante Wasserscheide/Zufluesse ab.
+- Idee: AOI nicht als grobe Box, sondern aus dem **Einzugsgebiet oberhalb des Damms** ableiten
+  (Wasserscheide). Quelle: HydroBASINS (HydroSHEDS-Familie, wie HydroRIVERS) - Damm als Pour-Point,
+  Upstream-Basins per Topologie unionieren -> Catchment-Polygon; oder DEM-Delineation (pysheds/
+  whitebox). AOI-bbox dann = Catchment-bbox (+ kleiner Puffer).
+- Loest 3 Dinge: (1) trimmt irrelevante Ecken, (2) garantiert volle Wasserscheide + alle Zufluesse,
+  (3) macht Schnee/Gletscher HYDROLOGISCH sinnvoll - z.B. fielen die Kazbek-Gletscher bei Zhinvali
+  korrekt raus (entwaessern in den Terek/Norden, nicht in den Zhinvali). Ersetzt zugleich die
+  frueher notierte "Einzugsgebiets-Maske fuer Schnee/Gletscher".
+- ACHTUNG Kosten: Neue clip_box -> kompletter Re-Download (HLS + S1, andere MGRS-Kacheln/Footprint)
+  + Neuberechnung (derive_reservoir, extract_timeseries) + Re-Clip der statischen Daten. Mehrstuendig.
+  Bewusst planen, nicht nebenbei.
+
 ### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
 - User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen
   (Schnee/Eis/Wasser-Farben) - und zwar fuer BEIDE Sensoren: S1 (Wasser) UND HLS
