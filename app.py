@@ -248,6 +248,40 @@ def _river_weight(ord_flow) -> float:
     return min(4.0, max(0.6, (9 - o) * 0.7))
 
 
+def _chaikin(coords: list, iters: int = 2) -> list:
+    """Chaikin corner-cutting: smooths a polyline for display only."""
+    for _ in range(iters):
+        if len(coords) < 3:
+            break
+        new = [coords[0]]
+        for i in range(len(coords) - 1):
+            p, q = coords[i], coords[i + 1]
+            new.append([0.75 * p[0] + 0.25 * q[0], 0.75 * p[1] + 0.25 * q[1]])
+            new.append([0.25 * p[0] + 0.75 * q[0], 0.25 * p[1] + 0.75 * q[1]])
+        new.append(coords[-1])
+        coords = new
+    return coords
+
+
+def smooth_river_features(features: list[dict]) -> list[dict]:
+    """Return copies of river features with Chaikin-smoothed geometry. This only
+    changes how the lines are drawn; the underlying HydroRIVERS topology and flow
+    order (used for the catchment filter and line width) are untouched."""
+    out = []
+    for f in features:
+        geom = f["geometry"]
+        gtype = geom["type"]
+        if gtype == "LineString":
+            new_geom = {"type": "LineString", "coordinates": _chaikin(geom["coordinates"])}
+        elif gtype == "MultiLineString":
+            new_geom = {"type": "MultiLineString",
+                        "coordinates": [_chaikin(line) for line in geom["coordinates"]]}
+        else:
+            new_geom = geom
+        out.append({"type": "Feature", "properties": f["properties"], "geometry": new_geom})
+    return out
+
+
 def river_label_point(features: list[dict]) -> tuple[float, float] | None:
     """A point on the main stem (longest line of the lowest flow order) to
     anchor the river-name label, so the name always sits on the actual river."""
@@ -311,17 +345,13 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # Width scales with flow order (larger rivers thicker, small tributaries thin).
     if rivers:
         folium.GeoJson(
-            {"type": "FeatureCollection", "features": rivers},
+            {"type": "FeatureCollection", "features": smooth_river_features(rivers)},
             name="Fluesse (HydroRIVERS)",
             style_function=lambda feat: {
                 "color": "#2980b9",
                 "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
                 "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
             },
-            tooltip=folium.GeoJsonTooltip(
-                fields=["ORD_FLOW"] if any("ORD_FLOW" in f["properties"] for f in rivers) else [],
-                aliases=["Flussordnung:"],
-            ),
         ).add_to(m)
 
         # River-name label - centered on the reservoir (the river runs through
