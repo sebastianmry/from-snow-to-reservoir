@@ -52,10 +52,13 @@ DATE_END   = datetime.today().strftime("%Y-%m-%d")
 
 NODATA      = 255
 MAX_WORKERS = 2     # conservative to avoid RAM overload / crashes
-MAX_RETRIES = 5     # PODAAC occasionally returns 5xx; retry a few times
+MAX_RETRIES = 3     # PODAAC occasionally returns 5xx; retry a few times. During a
+# server outage retrying more is futile (fail fast, recover via a later resume run).
 # (connect, read) timeout in seconds for each HTTP request. The read timeout is
 # the key fix against hangs: a stalled socket aborts instead of blocking forever.
-HTTP_TIMEOUT = (15, 180)
+# Kept short so a dead file is abandoned quickly instead of freezing the bar for
+# minutes (a healthy ~13 MB tile downloads well within 60 s).
+HTTP_TIMEOUT = (10, 60)
 # HTTP status codes worth retrying (transient server-side / rate-limit errors).
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 

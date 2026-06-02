@@ -58,13 +58,27 @@ WATER_VALUES    = {1, 2, 3, 4, 5}
 SNOW_VALUE      = 252
 CLOUD_WTR_VALUE = 253  # WTR layer's own cloud/cloud-shadow flag (replaces B09)
 MAX_CLOUD_PCT  = 30.0
-MIN_VALID_PCT  = 95.0  # HLS (optical): skip scenes with < 95% valid AOI pixels
+# HLS (optical): skip scenes with < this % valid (non-NoData) CATCHMENT pixels.
+# Set to 85 (not 95) for the catchment AOIs: the eastern Svaneti headwater tip of
+# the Enguri basin sits at the edge of many Sentinel-2/Landsat swaths, so ~12% is
+# NoData on many dates (all tiles present - acquisition geometry, not a missing
+# tile). 85 recovers the genuinely clear partial dates (Enguri 24 -> 47 usable
+# days) while still rejecting near-empty scenes. Going lower barely helps: most of
+# the remaining partial dates are ALSO cloud-covered (the true limiter here is
+# cloud, ~70-75% of dates), so they would just move to the cloud-skip bucket. The
+# residual coverage bias on the recovered days is removed by the *_est columns
+# (snow normalized to the observed area, scaled to the full basin).
+MIN_VALID_PCT  = 85.0
 # S1 (SAR): since we anchor to one relative orbit, require full AOI coverage
 # already at extract time. Partial orbits (e.g. swath-edge scenes like the 79%
 # 2025-09-17 Enguri date) are skipped here instead of only later in the dedup.
 S1_MIN_VALID_PCT  = 90.0
 S1_REPEAT_DAYS    = 12    # Sentinel-1 ground-track repeat cycle (orbit dedup)
 S1_FULL_COVER_PCT = 90.0  # orbit counts as full-AOI coverage (dedup partial filter)
+# Reservoir guard: if less than this % of the reservoir footprint itself has valid
+# pixels on a date, reservoir_area_km2 is set to NaN (the date is under-observed
+# over the lake, so a low value would be a false drawdown, not a real one).
+RESERVOIR_MIN_COVER = 95.0
 
 STATIC_DIR = Path("static_data")
 CACHE_DIR  = STATIC_DIR / "cache"
@@ -262,9 +276,22 @@ def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None,
     }
 
     if reservoir is not None and not reservoir.empty:
-        res_mask = rasterize_glaciers(reservoir, wtr_da.rio.crs,
-                                      wtr_da.rio.transform(), wtr.shape)
-        stats["reservoir_area_km2"] = float(np.sum(water_mask & res_mask) * px)
+        res_mask  = rasterize_glaciers(reservoir, wtr_da.rio.crs,
+                                       wtr_da.rio.transform(), wtr.shape)
+        n_res     = int(np.sum(res_mask))
+        res_valid = (wtr != NODATA) & res_mask
+        res_cov   = (float(np.sum(res_valid)) / n_res * 100) if n_res else 0.0
+        stats["reservoir_valid_pct"] = round(res_cov, 2)
+        if res_cov < RESERVOIR_MIN_COVER:
+            # Lake itself under-observed this date -> a low area would be a false
+            # drawdown. Report NaN for the reservoir AND for water_km2: the lake is
+            # the dominant AOI water body, so the AOI-wide water count is unreliable
+            # on exactly these dates too (the missing area is water-dense, and water
+            # cannot be area-normalized like snow since it is not evenly distributed).
+            stats["reservoir_area_km2"] = float("nan")
+            stats["water_km2"] = float("nan")
+        else:
+            stats["reservoir_area_km2"] = float(np.sum(water_mask & res_mask) * px)
 
     return stats
 
@@ -412,14 +439,33 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
     glacier_total_km2 = float(np.sum(glacier_mask & usable) * px)
     bare_ice_km2      = max(0.0, glacier_total_km2 - float(np.sum(snow_on_glacier) * px))
 
+    # Coverage/cloud-corrected seasonal snow. seasonal_snow_km2 is the raw count
+    # and is biased LOW whenever part of the basin is NoData (swath edge) or cloud,
+    # because that area is implicitly counted as snow-free. seasonal_snow_frac is
+    # the snow share of the OBSERVED (valid, cloud-free) non-glacier basin, and
+    # seasonal_snow_km2_est scales that share back to the FULL non-glacier basin -
+    # i.e. it fills the unobserved part with the observed snow rate. This makes the
+    # snow series comparable across dates with different coverage. (Assumes the
+    # unobserved area has a similar snow rate; the MIN_VALID_PCT / MAX_CLOUD_PCT
+    # floors keep that extrapolation modest.)
+    nonglacier_full = catch_mask & ~glacier_mask
+    obs_land        = usable & ~glacier_mask
+    n_obs_land      = int(np.sum(obs_land))
+    n_full_land     = int(np.sum(nonglacier_full))
+    seasonal_snow_frac    = float(np.sum(snow_seasonal)) / n_obs_land if n_obs_land else 0.0
+    seasonal_snow_km2_est = seasonal_snow_frac * float(n_full_land * px)
+
     return {
-        "water_area_km2":      float(np.sum(water_mask) * px),
-        "seasonal_snow_km2":   float(np.sum(snow_seasonal) * px),
-        "snow_on_glacier_km2": float(np.sum(snow_on_glacier) * px),
-        "bare_ice_km2":        bare_ice_km2,
-        "glacier_total_km2":   glacier_total_km2,
-        "cloud_cover_percent": round(cloud_pct, 2),
-        "valid_px_pct":        round(valid_pct, 2),
+        "water_area_km2":          float(np.sum(water_mask) * px),
+        "seasonal_snow_km2":       float(np.sum(snow_seasonal) * px),
+        "seasonal_snow_frac":      round(seasonal_snow_frac, 4),
+        "seasonal_snow_km2_est":   round(seasonal_snow_km2_est, 2),
+        "snow_on_glacier_km2":     float(np.sum(snow_on_glacier) * px),
+        "bare_ice_km2":            bare_ice_km2,
+        "glacier_total_km2":       glacier_total_km2,
+        "obs_land_pct":            round(float(n_obs_land) / (n_full_land or 1) * 100, 2),
+        "cloud_cover_percent":     round(cloud_pct, 2),
+        "valid_px_pct":            round(valid_pct, 2),
     }
 
 
@@ -443,6 +489,38 @@ def load_cache(name: str) -> dict:
 def save_cache(name: str, cache: dict):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     (CACHE_DIR / f"{name}.json").write_text(json.dumps(cache))
+
+
+def _needs_recompute(entry: dict, sensor: str) -> bool:
+    """For --recompute: does this cached date need a fresh Drive read+compute, or
+    can we trust its cached skip decision? We only re-read dates that produce (or
+    would now produce) an output row - 'ok' dates and dates that newly pass the
+    CURRENT thresholds. Cloud skips and genuine below-threshold partials are kept
+    as-is (no expensive Drive read), since they never contribute a row."""
+    if entry.get("status") == "ok":
+        return True
+    reason = entry.get("reason")
+    if reason == "coverage":
+        thr = S1_MIN_VALID_PCT if sensor == "s1" else MIN_VALID_PCT
+        return entry.get("valid_px_pct", 0) >= thr
+    if reason == "cloud":
+        return entry.get("cloud_cover_percent", 100) <= MAX_CLOUD_PCT
+    return False  # few_tiles / no_tiles: cheap pre-read skip, keep
+
+
+def prepare_cache(name: str, sensor: str, refresh: bool, recompute: bool) -> dict:
+    """Cache to start the run from. --refresh wipes it (full recompute). --recompute
+    keeps it but drops the entries that need a fresh read (ok / now-qualifying), so
+    those get reprocessed while known-skip dates are never read from Drive again."""
+    if refresh:
+        return {}
+    cache = load_cache(name)
+    if recompute:
+        before = len(cache)
+        cache = {d: e for d, e in cache.items() if not _needs_recompute(e, sensor)}
+        print(f"  recompute: re-reading {before - len(cache)} dates, "
+              f"keeping {len(cache)} cached skip-decisions (no Drive read)")
+    return cache
 
 
 def cache_rows(cache: dict) -> list[dict]:
@@ -495,7 +573,8 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
 # MAIN
 # ─────────────────────────────────────────────
 
-def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
+def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
+         recompute: bool = False):
     print("Authenticating with Google Drive...")
     drive = authenticate()
 
@@ -561,7 +640,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
         if anchor:
             dates = [d for d in dates if orbit_phase(d, anchor) == 0]
 
-        cache = {} if refresh else load_cache(f"{site}_s1")
+        cache = prepare_cache(f"{site}_s1", "s1", refresh, recompute)
         print(f"  {site}: {len(files)} B01_WTR files, {len(dates)} dates "
               f"on the {anchor} orbit ({len(cache)} cached)" if anchor else
               f"  {site}: {len(files)} B01_WTR files, {len(dates)} dates "
@@ -617,7 +696,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
             rows = dedup_single_orbit(rows)
             fieldnames = ["date", "water_km2", "valid_px_pct"]
             if any("reservoir_area_km2" in r for r in rows):
-                fieldnames.insert(2, "reservoir_area_km2")
+                fieldnames[2:2] = ["reservoir_area_km2", "reservoir_valid_pct"]
             save_outputs(rows, fieldnames, f"{site}_s1_timeseries")
 
     # ── DSWx-HLS ─────────────────────────────
@@ -658,7 +737,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
                 wtr_by_date.setdefault(date_str, []).append(f)
 
         dates = sorted(wtr_by_date.keys())
-        cache = {} if refresh else load_cache(f"{site}_hls")
+        cache = prepare_cache(f"{site}_hls", "hls", refresh, recompute)
         print(f"  {site}: {len(dates)} WTR dates ({len(cache)} cached)")
 
         for i, date_str in enumerate(dates, 1):
@@ -705,8 +784,9 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
         if rows:
             save_outputs(
                 rows,
-                ["date", "water_area_km2", "seasonal_snow_km2", "snow_on_glacier_km2",
-                 "bare_ice_km2", "glacier_total_km2", "cloud_cover_percent", "valid_px_pct"],
+                ["date", "water_area_km2", "seasonal_snow_km2", "seasonal_snow_frac",
+                 "seasonal_snow_km2_est", "snow_on_glacier_km2", "bare_ice_km2",
+                 "glacier_total_km2", "obs_land_pct", "cloud_cover_percent", "valid_px_pct"],
                 f"{site}_timeseries",
             )
 
@@ -718,5 +798,10 @@ if __name__ == "__main__":
     parser.add_argument("--skip-hls", action="store_true", help="skip the DSWx-HLS section")
     parser.add_argument("--refresh", action="store_true",
                         help="ignore the per-date cache and recompute everything")
+    parser.add_argument("--recompute", action="store_true",
+                        help="reprocess only 'ok' / now-qualifying dates; keep cached "
+                             "skip decisions (cloud / below-threshold) without re-reading "
+                             "them from Drive - much faster after a logic/threshold change")
     args = parser.parse_args()
-    main(skip_s1=args.skip_s1, skip_hls=args.skip_hls, refresh=args.refresh)
+    main(skip_s1=args.skip_s1, skip_hls=args.skip_hls,
+         refresh=args.refresh, recompute=args.recompute)

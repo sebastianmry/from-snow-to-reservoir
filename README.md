@@ -70,15 +70,17 @@ Stausee und Gletscher koennen in unterschiedlichen MGRS-Kacheln liegen (z.B. Zhi
 
 ### S1-Orbit-Dedup
 
-SAR-Wasserklassifikation haengt von der Aufnahmegeometrie ab (Layover/Shadow je nach auf-/absteigendem Orbit). Mehrere Orbits in einer Zeitreihe erzeugen einen kuenstlichen Saegezahn. `extract_timeseries.py` reduziert S1 daher auf **einen** konsistenten relativen Orbit. Statt automatischer Auswahl ist der Orbit pro AOI **fest verankert** (`s1_anchor`: Enguri 2024-08-29, Zhinvali 2024-08-25 — die durchgehend vollflaechig abgedeckten Tracks): es werden nur Tage dieser 12-Tage-Wiederholphase (`ordinal % 12`) behalten, sodass auch nur dieser Orbit heruntergeladen wird (~1/4 der Tage statt alle). Partielle Szenen (< 90% AOI) werden zusaetzlich verworfen. Ergebnis: saubere, geometrisch konsistente ~12-Tage-Reihe.
+SAR-Wasserklassifikation haengt von der Aufnahmegeometrie ab (Layover/Shadow je nach auf-/absteigendem Orbit). Mehrere Orbits in einer Zeitreihe erzeugen einen kuenstlichen Saegezahn. `extract_timeseries.py` reduziert S1 daher auf **einen** konsistenten relativen Orbit. Statt automatischer Auswahl ist der Orbit pro AOI **fest verankert** (`s1_anchor`: Enguri 2024-08-30, Zhinvali 2024-08-25), **objektiv** per `probe_coverage.py --sample` gewaehlt (echte Pixel-Abdeckung an Testdateien, siehe unten). Es werden nur Tage dieser 12-Tage-Wiederholphase (`ordinal % 12`) behalten, sodass auch nur dieser Orbit heruntergeladen wird (~1/4 der Tage statt alle). Partielle Szenen (< 90% AOI) werden zusaetzlich verworfen. Ergebnis: saubere, geometrisch konsistente ~12-Tage-Reihe (Enguri 51, Zhinvali 52 Szenen).
 
 ### Reservoir-Footprint aus S1
 
-Die `reservoir_area_km2` misst Wasser **nur innerhalb des Stausees**, getrennt von der AOI-weiten Wasserflaeche (die auch Fluesse enthaelt). Da HydroLAKES die Seen stark unterschaetzt, leitet `derive_reservoir.py` den Footprint aus den eigenen S1-Daten ab: ueber alle vollflaechigen Szenen wird eine **Wasser-Haeufigkeitskarte** akkumuliert; Pixel mit Wasser in >= 25% der Aufnahmen (occurrence-basiert, vgl. Pekel et al. 2016) bilden den Stausee, reduziert auf die mit dem HydroLAKES-Seed verbundene Komponente. Der Schwellenwert ist sensitivitaetsgeprueft (Flaeche aendert sich nur ±5–9% ueber 0,10–0,50, kein Fluss-Leck). Ergebnis (frueheres Box-AOI): Enguri 9,86 km², Zhinvali 11,19 km² (vs. real ~13 / ~11,5) — wird mit dem Catchment-AOI per Re-Download + `derive_reservoir.py` neu berechnet. Das Reservoir-Signal ist ~5x (Enguri) bis ~10x (Zhinvali) ruhiger als die AOI-Gesamtwasserflaeche und zeigt den saisonalen Speichergang. Hinweis: Enguri ist ein tiefer Schluchtspeicher — grosser Pegelhub bei kleiner Flaechenaenderung. Ein absoluter Wasserstand liesse sich daraus nur mit Bathymetrie ableiten; frei verfuegbare DEMs (Copernicus GLO-30) haben den Stausee als flache Wasserflaeche aufgenommen (keine Bathymetrie), und Satelliten-Altimetrie deckt diese kleinen Bergstauseen nicht ab. Daher wird der Speicher ueber die Flaeche ueberwacht, nicht ueber einen absoluten Pegel.
+Die `reservoir_area_km2` misst Wasser **nur innerhalb des Stausees**, getrennt von der AOI-weiten Wasserflaeche (die auch Fluesse enthaelt). Da HydroLAKES die Seen stark unterschaetzt, leitet `derive_reservoir.py` den Footprint aus den eigenen S1-Daten ab: ueber alle vollflaechigen Szenen wird eine **Wasser-Haeufigkeitskarte** akkumuliert; Pixel mit Wasser in >= 25% der Aufnahmen (occurrence-basiert, vgl. Pekel et al. 2016) bilden den Stausee, reduziert auf die mit dem HydroLAKES-Seed verbundene Komponente. Der Schwellenwert ist sensitivitaetsgeprueft (Flaeche aendert sich nur ±5–9% ueber 0,10–0,50, kein Fluss-Leck). Ergebnis (Catchment-AOI): Enguri 9,32 km², Zhinvali 11,20 km² (vs. real ~13 / ~11,5; Zhinvali = Punktlandung). Das Reservoir-Signal ist ~5x (Enguri) bis ~10x (Zhinvali) ruhiger als die AOI-Gesamtwasserflaeche und zeigt den saisonalen Speichergang (Zhinvali deutlich: ~8,5 km² Fruehjahr -> ~11 km² Herbst).
+
+**Reservoir-Guard:** Ist an einem Datum weniger als 95% des Stausee-Footprints valide beobachtet (`reservoir_valid_pct`), wird `reservoir_area_km2` (und `water_km2`) auf `NaN` gesetzt — eine NoData-Luecke ueber dem See wuerde sonst als Scheinabsenkung erscheinen (so geschehen Enguri 2025-04-27, nur 45% des Sees beobachtet). Zusaetzlich glaettet das Dashboard die Reservoir-Linie mit einem gleitenden 3-Punkt-Median (Rohwerte bleiben sichtbar), der einzelne SAR-Artefakte (Wind-Aufrauhung) auffaengt, ohne Daten zu loeschen. Hinweis: Enguri ist ein tiefer Schluchtspeicher — grosser Pegelhub bei kleiner Flaechenaenderung. Ein absoluter Wasserstand liesse sich daraus nur mit Bathymetrie ableiten; frei verfuegbare DEMs (Copernicus GLO-30) haben den Stausee als flache Wasserflaeche aufgenommen (keine Bathymetrie), und Satelliten-Altimetrie deckt diese kleinen Bergstauseen nicht ab. Daher wird der Speicher ueber die Flaeche ueberwacht, nicht ueber einen absoluten Pegel.
 
 ### Cache & Resume
 
-`extract_timeseries.py` speichert jedes Datum-Ergebnis (auch geskippte) in `static_data/cache/{site}_{s1,hls}.json`. Re-Laeufe ueberspringen bereits berechnete Daten — der teure Drive-Download passiert nur einmal. `--refresh` ignoriert den Cache, `--skip-s1` / `--skip-hls` laufen nur einen Sensor.
+`extract_timeseries.py` speichert jedes Datum-Ergebnis (auch geskippte, **mit den Stats**) in `static_data/cache/{site}_{s1,hls}.json`. Re-Laeufe ueberspringen bereits berechnete Daten — der teure Drive-Download passiert nur einmal. `--refresh` ignoriert den Cache, `--skip-s1` / `--skip-hls` laufen nur einen Sensor. `--recompute` liest nur die ergebnisrelevanten Tage neu (`ok` + unter den *aktuellen* Schwellen neu qualifizierende) und uebernimmt Wolken-/Unter-Schwelle-Skips aus dem Cache **ohne** Drive-Read — nach einer Logik-/Schwellen-Aenderung deutlich schneller (z.B. Zhinvali: 50 statt 249 Tage gelesen).
 
 ### Footprint-Vorfilter
 
@@ -88,9 +90,10 @@ Vor dem Download wird pro Datum die Vereinigung der Kachel-Footprints gegen das 
 
 | Filter | Schwellenwert | Begruendung |
 |--------|--------------|-------------|
-| AOI-Abdeckung (HLS) | >= 95% valide Pixel | Verwirft Szenen ohne vollstaendige Gebietsabdeckung (relativ zur ganzen AOI dank Mosaik) |
-| Bewoelkung (HLS) | <= 30% Wolken im AOI | Wissenschaftlich gaengiger Grenzwert fuer optische Fernerkundung; Wolke = WTR-Flag 253 |
-| AOI-Abdeckung (S1) | >= 70% Sicherheitsnetz, >= 90% fuer Orbit-Auswahl | Entfernt Teil-Orbits; nur vollflaechige Szenen gehen in die Reihe |
+| Catchment-Abdeckung (HLS) | >= 85% valide Pixel | Catchment-relativ. 85 (nicht 95), weil der oestliche Enguri-Zipfel oft am S2/Landsat-Swath-Rand liegt (~12% NoData trotz vorhandener Kacheln). Tiefer bringt kaum mehr — die restlichen Teiltage sind meist zusaetzlich bewoelkt. Echter Limiter ist die Bewoelkung (~70-75% der Tage) |
+| Bewoelkung (HLS) | <= 30% Wolken im Catchment | Wissenschaftlich gaengiger Grenzwert fuer optische Fernerkundung; Wolke = WTR-Flag 253 |
+| Catchment-Abdeckung (S1) | >= 90% | Entfernt Teil-Orbits; nur vollflaechige Szenen gehen in die Reihe |
+| Reservoir-Abdeckung (S1) | >= 95% des Footprints | Sonst `reservoir_area_km2`/`water_km2` = NaN (keine Scheinabsenkung bei NoData ueber dem See) |
 
 ### Wasser aus S1, Schnee aus HLS
 
@@ -101,20 +104,24 @@ Optisches HLS ueber-detektiert Wasser stark (Geländeschatten/Eis werden als Was
 | Spalte | Beschreibung |
 |--------|-------------|
 | `water_area_km2` | Offene Wasserflaeche im AOI (DSWx-Klassen 1-5). HLS-Spalte; fuers Wasser-Signal stattdessen `water_km2` aus der S1-Reihe verwenden |
-| `seasonal_snow_km2` | Schneebedeckung ausserhalb der RGI-Gletscherpolygone |
+| `seasonal_snow_km2` | Schneebedeckung ausserhalb der RGI-Gletscherpolygone (roh, absolut) |
+| `seasonal_snow_frac` | Schneeanteil der **beobachteten** (validen, wolkenfreien) Nicht-Gletscher-Beckenflaeche — coverage-/wolken-robust |
+| `seasonal_snow_km2_est` | `seasonal_snow_frac` x volle Nicht-Gletscher-Beckenflaeche — coverage-korrigierte saisonale Schneeflaeche (fuellt unbeobachtete Flaeche mit der beobachteten Schneerate; **Hauptspalte fuers Schneesignal**) |
 | `snow_on_glacier_km2` | Schneebedeckung innerhalb der RGI-Gletscherpolygone |
 | `bare_ice_km2` | Blankes Gletschereis (Gletscherflaeche minus Schneebedeckung) — Schmelzindikator |
-| `glacier_total_km2` | Gesamtflaeche der RGI-Polygone im AOI |
-| `cloud_cover_percent` | Anteil bewoelkter Pixel im AOI |
-| `valid_px_pct` | Anteil valider (nicht-NoData) Pixel im AOI |
+| `glacier_total_km2` | Gesamtflaeche der RGI-Polygone im Catchment |
+| `obs_land_pct` | Anteil der Nicht-Gletscher-Beckenflaeche, der an dem Tag valide+wolkenfrei beobachtet wurde (Vertrauensmass fuer die Schnee-Schaetzung) |
+| `cloud_cover_percent` | Anteil bewoelkter Pixel im Catchment |
+| `valid_px_pct` | Anteil valider (nicht-NoData) Pixel im Catchment |
 
 S1-Reihe (`*_s1_timeseries.parquet`):
 
 | Spalte | Beschreibung |
 |--------|-------------|
-| `water_km2` | Offene Wasserflaeche im gesamten AOI (DSWx-Klassen 1-5) aus Radar — das Wasser-Signal |
-| `reservoir_area_km2` | Wasserflaeche **nur im Stausee** (S1-abgeleiteter Footprint), ohne Fluesse — ruhiger, pegelrelevant |
-| `valid_px_pct` | Anteil valider Pixel im AOI |
+| `water_km2` | Offene Wasserflaeche im gesamten Catchment (DSWx-Klassen 1-5) aus Radar — das Wasser-Signal (NaN, wenn Reservoir-Guard greift) |
+| `reservoir_area_km2` | Wasserflaeche **nur im Stausee** (S1-abgeleiteter Footprint), ohne Fluesse — ruhiger, pegelrelevant (NaN, wenn See < 95% beobachtet) |
+| `reservoir_valid_pct` | Anteil valide beobachteter Pixel **im Stausee-Footprint** (Basis des Reservoir-Guards) |
+| `valid_px_pct` | Anteil valider Pixel im Catchment |
 
 ## Setup
 
@@ -152,7 +159,7 @@ python download_hls.py          # OPERA DSWx-HLS (optisch) -> Google Drive
 python download_s1.py           # OPERA DSWx-S1 (Radar)    -> Google Drive
 python derive_reservoir.py      # S1-Wasserausdehnung -> echter Stausee-Footprint (einmalig nach S1-Download)
 python extract_timeseries.py    # Mosaik + Zeitreihen -> *_timeseries.parquet (HLS) + *_s1_timeseries.parquet (S1)
-                                # Optionen: --skip-s1 / --skip-hls / --refresh
+                                # Optionen: --skip-s1 / --skip-hls / --refresh / --recompute
 
 # 3. Dashboard starten
 streamlit run app.py

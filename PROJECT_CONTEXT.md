@@ -175,6 +175,42 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   neu, Doku-Zahlen finalisieren (README markiert die alten 9,86/11,19 km² als "neu zu berechnen").
 - DEM-Delineation war Fallback, NICHT nötig (HydroBASINS lev12 ausreichend).
 
+### Wissenschaftliche Optimierungen (2026-06-02, GELAUFEN + verifiziert)
+- **Orbit objektiv gewählt:** probe_coverage.py um Stufe B (`--sample N`) erweitert -> lädt N
+  Testdateien je Kandidaten-Phase, misst ECHTE valid_px_pct (gleiche Maschinerie wie der Lauf).
+  Ergebnis kippte die Footprint-Wahl: enguri Phase 0 (20240823) hatte am Startdatum nur 59.5%
+  valid -> stattdessen Phase 7 (20240830, mean 99.4%). zhinvali blieb 20240825. WICHTIG: zhinvali
+  Phase 7 hatte real nur ~7% valid (Footprint log ≥99%) - ohne Stufe B ein Desaster. Lehre:
+  Orbit pro AOI an echten Pixeln wählen. Final-Reihe: enguri 51, zhinvali 52 Szenen.
+- **HLS MIN_VALID_PCT 95 -> 85** (catchment-relativ). Diagnose: Enguri hat einen ~88%-Cluster
+  (östl. Svaneti-Zipfel am S2/Landsat-Swath-Rand, alle Kacheln da = Aufnahmegeometrie, kein Gap).
+  EHRLICH: brachte 24 -> 47 Tage (NICHT die anfangs geschätzten ~124 - die meisten 85-89%-Tage
+  sind ZUSÄTZLICH bewölkt, Code prüft coverage vor cloud, sie wandern nur in den cloud-Bucket).
+  Echter Limiter ist die Bewölkung: Enguri 210/300, zhinvali 187/249 Tage >30% Wolken. Tiefer als
+  85 bringt ~nichts. zhinvali kein Cluster (cloud-limitiert), bleibt 49 HLS-Tage.
+- **Schnee-Normalisierung:** neue Spalten seasonal_snow_frac (= Schnee / beobachtete Nicht-
+  Gletscher-Beckenfläche) + seasonal_snow_km2_est (= frac × volle Beckenfläche) + obs_land_pct.
+  Entzerrt coverage-/wolkenbedingte Teiltage (füllt Unbeobachtetes mit beobachteter Schneerate).
+  Effekt moderat (~5-8%), weil ok-Tage eh 92-95% beobachtet sind = wenig Bias. App + KPI nutzen est.
+- **Reservoir-Guard + water-Guard:** reservoir_valid_pct = valide Pixel IM See-Footprint; < 95% ->
+  reservoir_area_km2 UND water_km2 = NaN (See ist Hauptwasserkörper, Wasser nicht normalisierbar).
+  Fängt NoData-über-See als Scheinabsenkung. Verifiziert: enguri 2025-04-27 reservoir_valid_pct
+  45.2% -> beide NaN (war also NoData-Loch, kein Wind). Genau 1 NaN-Tag je AOI.
+- **App-Glättung:** Reservoir-Linie = gleitender 3-Punkt-Median (Rohpunkte blass sichtbar), KPI-Max
+  aus dem Median (robuster gegen SAR-Artefakte). Schnee-Chart/KPI nutzen seasonal_snow_km2_est.
+- **`--recompute` Flag (extract_timeseries):** liest nur ergebnisrelevante Tage neu (ok + unter
+  AKTUELLEN Schwellen neu qualifizierende), übernimmt cloud-/unter-Schwelle-Skips MIT Stats aus
+  dem Cache ohne Drive-Read. Nach Logik-/Schwellen-Änderung viel schneller (zhinvali 50 statt 249).
+  prepare_cache() + _needs_recompute(). NICHT --refresh nutzen, wenn nur Logik sich ändert!
+- **Download-Robustheit:** requests-Session statt fsspec, HTTP_TIMEOUT (10,60)s gegen Hänger,
+  MAX_RETRIES 3, Retry für 429/5xx. PODAAC warf während des Re-Downloads viele transiente 502 +
+  vereinzelt 404 (zurückgezogene Granules). Resume-Lauf holt 502er nach; 404 bleiben weg.
+- **Reservoir-Flächen final (Catchment-AOI):** Enguri 9.32 km², Zhinvali 11.20 km² (≈ alt; Methode
+  stabil ggü. AOI-Wechsel). Zhinvali S1-Reservoir zeigt klaren Jahresgang ~8.5 (Frühjahr) -> ~11
+  (Herbst); Enguri flach ~6.5-7.9 (tiefer Schluchtspeicher).
+- Stand Daten: S1 komplett (enguri 204 Dateien/51 Tage, zhinvali 272/53). HLS ~99% (paar 502/404
+  offen, unkritisch, per Resume nachholbar). Parquets neu, App verifiziert (0 Exceptions).
+
 ### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
 - User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen
   (Schnee/Eis/Wasser-Farben) - und zwar fuer BEIDE Sensoren: S1 (Wasser) UND HLS

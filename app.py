@@ -45,15 +45,17 @@ AOIS = {
 }
 
 SNOW_COLORS = {
-    "seasonal_snow_km2":   "#a8d8ea",
-    "snow_on_glacier_km2": "#4a90d9",
-    "bare_ice_km2":        "#1a3a5c",
+    "seasonal_snow_km2":     "#a8d8ea",
+    "seasonal_snow_km2_est": "#a8d8ea",
+    "snow_on_glacier_km2":   "#4a90d9",
+    "bare_ice_km2":          "#1a3a5c",
 }
 
 SNOW_LABELS = {
-    "seasonal_snow_km2":   "Saisonaler Schnee",
-    "snow_on_glacier_km2": "Schnee auf Gletscher",
-    "bare_ice_km2":        "Blankes Gletschereis",
+    "seasonal_snow_km2":     "Saisonaler Schnee",
+    "seasonal_snow_km2_est": "Saisonaler Schnee (coverage-korrigiert)",
+    "snow_on_glacier_km2":   "Schnee auf Gletscher",
+    "bare_ice_km2":          "Blankes Gletschereis",
 }
 
 
@@ -482,16 +484,28 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
         hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>AOI gesamt</extra>",
     ))
 
-    # Reservoir-only footprint - the headline signal
+    # Reservoir-only footprint - the headline signal. Raw values are shown as
+    # faint dots; the bold line is a 3-point rolling median that suppresses single
+    # -date SAR artefacts (wind roughening the surface, swath-edge NoData) without
+    # deleting any data. NaN dates (lake under-observed, reservoir guard) are gaps.
     if has_res:
+        res_median = df["reservoir_area_km2"].rolling(3, center=True, min_periods=1).median()
         fig.add_trace(go.Scatter(
             x=df["date"],
             y=df["reservoir_area_km2"],
-            mode="lines+markers",
-            name="Stausee-Flaeche (Footprint)",
+            mode="markers",
+            name="Stausee-Flaeche (roh)",
+            marker=dict(size=4, color="#85c1e9"),
+            hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>roh</extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=df["date"],
+            y=res_median,
+            mode="lines",
+            name="Stausee-Flaeche (gleitender Median)",
             line=dict(color="#1a5276", width=2.5),
-            marker=dict(size=4),
-            hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Stausee</extra>",
+            connectgaps=False,
+            hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Median</extra>",
         ))
 
     fig.update_layout(
@@ -512,7 +526,11 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
 def chart_snow(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
-    snow_cols = ["seasonal_snow_km2", "snow_on_glacier_km2", "bare_ice_km2"]
+    # Prefer the coverage/cloud-corrected seasonal snow when available, so partial
+    # (swath-edge) dates are not biased low against full-coverage dates.
+    seas_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in df.columns
+                else "seasonal_snow_km2")
+    snow_cols = [seas_col, "snow_on_glacier_km2", "bare_ice_km2"]
 
     # Cloud gap shading (same logic, based on first snow column)
     gap_mask = df[snow_cols[0]].isna()
@@ -620,23 +638,30 @@ latest_w   = df_s1.iloc[-1] if not df_s1.empty else None
 max_water  = df_s1["water_km2"].max() if not df_s1.empty else None
 
 latest_h    = df.iloc[-1] if not df.empty else None
-max_snow    = (df["seasonal_snow_km2"] + df["snow_on_glacier_km2"]).max() if not df.empty else None
+# Use the coverage-corrected seasonal snow when present (comparable across dates).
+_seas_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in df.columns
+             else "seasonal_snow_km2")
+max_snow    = (df[_seas_col] + df["snow_on_glacier_km2"]).max() if not df.empty else None
 latest_snow = (
-    latest_h["seasonal_snow_km2"] + latest_h["snow_on_glacier_km2"]
+    latest_h[_seas_col] + latest_h["snow_on_glacier_km2"]
     if latest_h is not None else None
 )
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    has_res = (latest_w is not None and "reservoir_area_km2" in df_s1.columns
-               and pd.notna(latest_w.get("reservoir_area_km2")))
+    res_series = (df_s1["reservoir_area_km2"] if "reservoir_area_km2" in df_s1.columns
+                  else pd.Series(dtype=float))
+    has_res = res_series.notna().any()
     if has_res:
-        max_res = df_s1["reservoir_area_km2"].max()
+        # Robust max from the rolling median, so a single SAR artefact spike does
+        # not define the headline. Current = last date with a valid lake reading.
+        max_res    = res_series.rolling(3, center=True, min_periods=1).median().max()
+        latest_res = res_series.dropna().iloc[-1]
         st.metric(
             "Stausee-Flaeche (S1, aktuell)",
-            f"{latest_w['reservoir_area_km2']:.2f} km²",
-            delta=f"Max: {max_res:.2f} km²",
+            f"{latest_res:.2f} km²",
+            delta=f"Max (Median): {max_res:.2f} km²",
             delta_color="off",
         )
     elif latest_w is not None:
