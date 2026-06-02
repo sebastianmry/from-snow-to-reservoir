@@ -48,31 +48,10 @@ except ImportError:
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-# Parent folder in Google Drive holding the hls/ and s1/ subfolders
-DRIVE_PARENT = "OPERA_DSWx"
-
-# s1_anchor: one date (YYYYMMDD) of the chosen Sentinel-1 relative orbit. The S1
-# section keeps ONLY dates sharing this orbit's 12-day phase (ordinal % 12), so
-# the series is one consistent look geometry and we download just that orbit
-# (~1/4 of the dates here) instead of all of them. Anchors picked from cache
-# coverage to match the established series:
-#   enguri  20240829 = 49 full scenes since 2024-08-29 (the orbit the previous
-#     auto-dedup already used; 99.2% coverage).
-#   zhinvali 20240825 = 52 full scenes since 2024-08-24, 99.7% (also the previous
-#     series; zhinvali's 30.08 phase is a late S1C track from May 2025 - unusable).
-AOI_1 = {
-    "name": "enguri",
-    "label": "Enguri Talsperre + Svaneti",
-    "clip_box": (41.70, 42.55, 42.80, 43.15),   # (min_lon, min_lat, max_lon, max_lat)
-    "s1_anchor": "20240829",
-}
-
-AOI_2 = {
-    "name": "zhinvali",
-    "label": "Zhinvali Talsperre + Gergeti",
-    "clip_box": (44.30, 42.00, 45.15, 42.80),
-    "s1_anchor": "20240825",
-}
+# AOI definition (clip_box + s1_anchor) and DRIVE_PARENT live in aoi_config.py.
+# s1_anchor = one date (YYYYMMDD) of the chosen Sentinel-1 relative orbit; the S1
+# section below keeps ONLY dates sharing this orbit's 12-day phase (orbit_phase).
+from aoi_config import AOIS, AOI_1, AOI_2, DRIVE_PARENT, CATCHMENTS_GEOJSON  # noqa: F401
 
 NODATA          = 255
 WATER_VALUES    = {1, 2, 3, 4, 5}
@@ -153,6 +132,25 @@ def load_reservoir(site: str) -> gpd.GeoDataFrame | None:
         return None
 
 
+def load_catchment(site: str) -> gpd.GeoDataFrame | None:
+    """Load the HydroBASINS catchment polygon for one site (download_catchments.py).
+    Used to mask the statistics to the reservoir's drainage basin so snow/glacier/
+    water are counted only inside the Einzugsgebiet."""
+    if not CATCHMENTS_GEOJSON.exists():
+        return None
+    try:
+        gdf = gpd.read_file(CATCHMENTS_GEOJSON)
+        gdf = gdf[gdf["aoi"] == site]
+        if gdf.empty:
+            return None
+        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        return gdf
+    except Exception as e:
+        print(f"  ERROR loading catchment polygon: {e}")
+        return None
+
+
 def rasterize_glaciers(glaciers: gpd.GeoDataFrame, src_crs, transform, shape: tuple) -> np.ndarray:
     """Rasterize glacier polygons to match a raster's grid. Returns boolean mask."""
     if glaciers is None or glaciers.empty:
@@ -177,6 +175,16 @@ def rasterize_glaciers(glaciers: gpd.GeoDataFrame, src_crs, transform, shape: tu
         dtype=np.uint8,
     )
     return mask.astype(bool)
+
+
+def _catchment_mask(catchment: gpd.GeoDataFrame | None, wtr_da, shape: tuple) -> np.ndarray:
+    """Boolean mask of the catchment polygon on the raster grid. Returns an
+    all-True mask when no catchment is given, so callers behave exactly as
+    before (no masking) when catchments.geojson is absent."""
+    if catchment is None or catchment.empty:
+        return np.ones(shape, dtype=bool)
+    return rasterize_glaciers(catchment, wtr_da.rio.crs,
+                              wtr_da.rio.transform(), shape)
 
 
 # ─────────────────────────────────────────────
@@ -223,10 +231,16 @@ def read_bytes(drive_file) -> bytes:
 # PIXEL ANALYSIS
 # ─────────────────────────────────────────────
 
-def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None) -> dict:
+def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None,
+                     catchment: gpd.GeoDataFrame | None = None) -> dict:
     """Water area from a mosaicked DSWx-S1 B01_WTR DataArray (EPSG:4326).
     SAR is cloud-independent, so no cloud filter applies. Always returns the
     stats incl. valid_px_pct; the caller decides whether coverage is sufficient.
+
+    If a catchment polygon is given, water is counted ONLY inside the drainage
+    basin and valid_px_pct is the fraction of CATCHMENT pixels that have data
+    (not the bbox), so the coverage filter stays meaningful even though the
+    clip_box is larger than the basin.
 
     If a reservoir polygon is given, also report reservoir_area_km2 = water
     pixels INSIDE the reservoir footprint - separate from the AOI-wide water
@@ -235,9 +249,12 @@ def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None) -> dict:
     wtr = wtr_da.values[0]
     px  = _pixel_size_km2_da(wtr_da)
 
-    valid      = wtr != NODATA
-    valid_pct  = float(np.sum(valid)) / wtr.size * 100
-    water_mask = np.isin(wtr, list(WATER_VALUES))
+    catch_mask = _catchment_mask(catchment, wtr_da, wtr.shape)
+    n_catch    = int(np.sum(catch_mask)) or wtr.size
+
+    valid      = (wtr != NODATA) & catch_mask
+    valid_pct  = float(np.sum(valid)) / n_catch * 100
+    water_mask = np.isin(wtr, list(WATER_VALUES)) & catch_mask
 
     stats = {
         "water_km2":    float(np.sum(water_mask) * px),
@@ -352,7 +369,8 @@ def _pixel_size_km2_da(da) -> float:
     return (res_x * 111.32 * np.cos(np.radians(center_lat))) * (res_y * 110.574)
 
 
-def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None) -> dict:
+def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
+                      catchment: gpd.GeoDataFrame | None = None) -> dict:
     """
     Water + snow/glacier stats from a mosaicked DSWx-HLS B01_WTR DataArray.
     wtr_da is an EPSG:4326 mosaic (output of mosaic_tiles).
@@ -361,6 +379,11 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None) -> dict:
     cloud/cloud-shadow), the product's authoritative determination - no separate
     B09 layer is needed. Always returns the stats incl. valid_px_pct and
     cloud_cover_percent; the caller decides whether coverage / cloud are acceptable.
+
+    If a catchment polygon is given, all stats (water, snow, glacier) are counted
+    ONLY inside the drainage basin, and valid_px_pct / cloud_cover_percent are
+    catchment-relative - so the Kazbek glaciers (outside the Zhinvali basin) and
+    the empty corners of the larger clip_box do not enter the numbers.
     """
     wtr       = wtr_da.values[0]
     px        = _pixel_size_km2_da(wtr_da)
@@ -368,11 +391,14 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None) -> dict:
     raster_crs = wtr_da.rio.crs
     shape     = wtr.shape
 
-    valid = wtr != NODATA          # has data (not fill); includes cloud-masked 253
-    cloud = wtr == CLOUD_WTR_VALUE  # product's own cloud/cloud-shadow flag
+    catch_mask = _catchment_mask(catchment, wtr_da, shape)
+    n_catch    = int(np.sum(catch_mask)) or wtr.size
+
+    valid = (wtr != NODATA) & catch_mask   # has data (not fill); incl. cloud-masked 253
+    cloud = (wtr == CLOUD_WTR_VALUE) & catch_mask  # product's own cloud/shadow flag
 
     n_valid = int(np.sum(valid))
-    valid_pct = float(n_valid) / wtr.size * 100
+    valid_pct = float(n_valid) / n_catch * 100
     cloud_pct = float(np.sum(cloud & valid)) / max(n_valid, 1) * 100
 
     usable      = valid & ~cloud
@@ -504,6 +530,9 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
         reservoir = load_reservoir(site)
         if reservoir is not None:
             print(f"  reservoir polygon loaded for {site}")
+        catchment = load_catchment(site)
+        if catchment is not None:
+            print(f"  catchment polygon loaded for {site} (stats masked to basin)")
 
         site_folder = get_folder_id(drive, site, s1_root) if s1_root else None
         if not site_folder:
@@ -564,7 +593,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
                     cache[date_str] = {"status": "skip", "reason": "no_tiles"}
                     save_cache(f"{site}_s1", cache)
                     continue
-                stats = extract_s1_stats(wtr_mosaic, reservoir)
+                stats = extract_s1_stats(wtr_mosaic, reservoir, catchment)
                 if stats["valid_px_pct"] < S1_MIN_VALID_PCT:
                     print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {S1_MIN_VALID_PCT}%)")
                     cache[date_str] = {"status": "skip", "reason": "coverage", **stats}
@@ -602,8 +631,11 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
         return
 
     for aoi in ([] if skip_hls else [AOI_1, AOI_2]):
-        site     = aoi["name"]
-        glaciers = glacier_masks.get(site)
+        site      = aoi["name"]
+        glaciers  = glacier_masks.get(site)
+        catchment = load_catchment(site)
+        if catchment is not None:
+            print(f"  catchment polygon loaded for {site} (stats masked to basin)")
         rows: list[dict] = []
 
         site_folder = get_folder_id(drive, site, hls_root)
@@ -651,7 +683,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False):
                     save_cache(f"{site}_hls", cache)
                     continue
 
-                stats = extract_hls_stats(wtr_mosaic, glaciers)
+                stats = extract_hls_stats(wtr_mosaic, glaciers, catchment)
                 if stats["valid_px_pct"] < MIN_VALID_PCT:
                     print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {MIN_VALID_PCT}%)")
                     cache[date_str] = {"status": "skip", "reason": "coverage", **stats}

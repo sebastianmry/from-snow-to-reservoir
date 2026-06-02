@@ -29,25 +29,19 @@ MAIN_RIVER = {"enguri": "Enguri", "zhinvali": "Aragvi"}
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-STATIC_DIR = Path("static_data")
+from aoi_config import AOIS as _AOI_CONFIG, STATIC_DIR
 
+# Dashboard view, keyed by display label, built from the central AOI config.
 AOIS = {
-    "Enguri (West-Georgien)": {
-        "key": "enguri",
-        "clip_box": (41.70, 42.55, 42.80, 43.15),
-        "center": (42.884, 42.753),
-        "dam": (42.032, 42.753),
-        "dam_label": "Enguri-Staudamm (271 m)",
-        "zoom": 9,
-    },
-    "Zhinvali (Ost-Georgien)": {
-        "key": "zhinvali",
-        "clip_box": (44.30, 42.00, 45.15, 42.80),
-        "center": (44.725, 42.40),
-        "dam": (44.771, 42.133),
-        "dam_label": "Zhinvali-Staudamm",
-        "zoom": 9,
-    },
+    cfg["display_label"]: {
+        "key": cfg["name"],
+        "clip_box": cfg["clip_box"],
+        "center": cfg["center"],
+        "dam": cfg["dam"],
+        "dam_label": cfg["dam_label"],
+        "zoom": cfg["zoom"],
+    }
+    for cfg in _AOI_CONFIG.values()
 }
 
 SNOW_COLORS = {
@@ -230,6 +224,25 @@ def load_glaciers(clip_box: tuple) -> gpd.GeoDataFrame | None:
 
 
 @st.cache_data(show_spinner=False)
+def load_catchment(aoi_key: str) -> gpd.GeoDataFrame | None:
+    """HydroBASINS drainage-basin polygon for the AOI (download_catchments.py).
+    The analysis is masked to this basin, so it doubles as the true AOI contour."""
+    path = STATIC_DIR / "catchments.geojson"
+    if not path.exists():
+        return None
+    try:
+        gdf = gpd.read_file(path)
+        gdf = gdf[gdf["aoi"] == aoi_key]
+        if gdf.empty:
+            return None
+        if gdf.crs and gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        return gdf
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False)
 def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
     """S1-derived reservoir footprint polygon (derive_reservoir.py)."""
     path = STATIC_DIR / "reservoirs.geojson"
@@ -316,7 +329,8 @@ def river_label_point(features: list[dict]) -> tuple[float, float] | None:
 
 
 def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None,
-              reservoir: gpd.GeoDataFrame | None = None) -> folium.Map:
+              reservoir: gpd.GeoDataFrame | None = None,
+              catchment: gpd.GeoDataFrame | None = None) -> folium.Map:
     min_lon, min_lat, max_lon, max_lat = aoi["clip_box"]
     center_lat = (min_lat + max_lat) / 2
     center_lon = (min_lon + max_lon) / 2
@@ -334,15 +348,29 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
         c = reservoir.geometry.union_all().centroid
         res_label_anchor = (c.y, c.x)
 
-    # AOI bounding box
-    folium.Rectangle(
-        bounds=[[min_lat, min_lon], [max_lat, max_lon]],
-        color="#5d6d7e",
-        weight=1.5,
-        dash_array="6,6",
-        fill=False,
-        tooltip="Untersuchungsgebiet (AOI)",
-    ).add_to(m)
+    # AOI = the drainage basin above the dam (HydroBASINS catchment). Draw its
+    # contour; the dashed bbox is only a fallback when the catchment is missing.
+    if catchment is not None and not catchment.empty:
+        folium.GeoJson(
+            catchment.__geo_interface__,
+            name="Einzugsgebiet (Catchment)",
+            style_function=lambda _: {
+                "color": "#5d6d7e",
+                "weight": 2.0,
+                "fillColor": "#5d6d7e",
+                "fillOpacity": 0.04,
+            },
+            tooltip="Einzugsgebiet oberhalb des Staudamms",
+        ).add_to(m)
+    else:
+        folium.Rectangle(
+            bounds=[[min_lat, min_lon], [max_lat, max_lon]],
+            color="#5d6d7e",
+            weight=1.5,
+            dash_array="6,6",
+            fill=False,
+            tooltip="Untersuchungsgebiet (AOI)",
+        ).add_to(m)
 
     # Glacier polygons - cool light violet so they stay distinct from the blue
     # water layers and the white basemap. Split into named/unnamed: only named
@@ -657,8 +685,11 @@ with map_col:
         rivers    = load_rivers(aoi["key"])
         glaciers  = load_glaciers(tuple(aoi["clip_box"]))
         reservoir = load_reservoir(aoi["key"])
+        catchment = load_catchment(aoi["key"])
 
     caps = []
+    if catchment is not None:
+        caps.append("Einzugsgebiet (HydroBASINS)")
     if glaciers is not None:
         caps.append(f"{len(glaciers)} RGI v7 Gletscherpolygone")
     else:
@@ -670,7 +701,7 @@ with map_col:
         caps.append("Stausee-Footprint nicht gefunden - derive_reservoir.py ausfuehren")
     st.caption(" · ".join(caps))
 
-    m = build_map(aoi, rivers, glaciers, reservoir)
+    m = build_map(aoi, rivers, glaciers, reservoir, catchment)
     st_folium(m, height=430, use_container_width=True)
 
 with chart_col:

@@ -11,16 +11,19 @@ Georgiens Stromversorgung haengt zu etwa 80 % von der Wasserkraft ab. Saisonale 
 
 ## Areas of Interest
 
-| AOI | Bbox (min_lon, min_lat, max_lon, max_lat) | Staudamm (lon, lat) | Objekte |
-|-----|------------------------------------------|---------------------|---------|
-| Enguri | 41.70, 42.55, 42.80, 43.15 | 42.032, 42.753 | Enguri Dam (271 m), starke Vergletscherung rund um Mestia, grenzt an Abchasien |
-| Zhinvali | 44.30, 42.00, 45.15, 42.80 | 44.771, 42.133 | Zhinvali Dam (Trinkwasser Tbilisi), Gergeti-Gletscher / Kazbek (5 047 m), grenzt an Suedossetien |
+Die AOIs sind **das Einzugsgebiet (Catchment) oberhalb des jeweiligen Staudamms**, abgeleitet aus HydroBASINS (Damm als Pour-Point, Upstream-Sub-Basins unioniert, siehe `download_catchments.py`). Der Satellitendownload nutzt die **Bounding-Box** des Catchments (+ kleiner Puffer); die Analyse-Statistik wird zusaetzlich auf das **Catchment-Polygon maskiert**, sodass Schnee/Gletscher/Wasser nur innerhalb der Wasserscheide zaehlen.
+
+| AOI | Catchment-Flaeche | Clip-Box (min_lon, min_lat, max_lon, max_lat) | Staudamm (lon, lat) | Objekte |
+|-----|-------------------|----------------------------------------------|---------------------|---------|
+| Enguri | ~3 139 km² | 41.847, 42.729, 43.166, 43.278 | 42.032, 42.753 | Enguri Dam (271 m), starke Vergletscherung Svaneti (oestliche Quellfluesse bis Ushguli), grenzt an Abchasien |
+| Zhinvali | ~2 089 km² | 44.313, 42.001, 45.245, 42.628 | 44.771, 42.133 | Zhinvali Dam (Trinkwasser Tbilisi); Kazbek/Gergeti-Gletscher liegen **ausserhalb** (entwaessern in den Terek), grenzt an Suedossetien |
 
 ## Daten
 
 - **OPERA DSWx-HLS (Level-3):** Optische Wasser-/Schneeklassifikation (B01_WTR) aus Landsat-8/9 und Sentinel-2, ~2-3 Tage Revisit. Wolkenmaskierung ueber das WTR-eigene Flag (Wert 253) — kein separater B09-Layer noetig.
 - **OPERA DSWx-S1 (Level-3):** Radar-basierte Wasserklassifikation (B01_WTR), wolkenunabhaengig. Auf einen konsistenten relativen Orbit reduziert (~12-Tage-Reihe).
 - **Randolph Glacier Inventory v7 (RGI), Region 12:** Gletscher-Polygone fuer den Kaukasus (NSIDC, via `download_glaciers.py`)
+- **HydroBASINS v1c (lev12):** Sub-Basin-Polygone (HydroSHEDS) zur Ableitung des Einzugsgebiets oberhalb des Staudamms (Pour-Point-Delineation, via `download_catchments.py`) -> definiert AOI-Box + Analyse-Maske
 - **HydroRIVERS v10:** Flussnetz (HydroSHEDS), gefiltert auf das Einzugsgebiet oberhalb des Staudamms (via `download_rivers.py`)
 - **HydroLAKES v1.0:** Stausee-Polygone (HydroSHEDS) als *Seed* via `download_reservoirs.py`. HydroLAKES unterschaetzt die Seen stark (Enguri 4,9 km² statt real ~13) — daher nur Ansatzpunkt; der echte Footprint wird per `derive_reservoir.py` aus der S1-Wasserausdehnung abgeleitet.
 
@@ -41,11 +44,23 @@ extract_timeseries.py    # Pro Datum: alle Kacheln zu AOI-Mosaik mergen (EPSG:43
 app.py (Streamlit)       # Interaktive Karte (Folium) + Zeitreihen (Plotly)
 
 Statische Geodaten (einmalig):
+  download_catchments.py   # HydroBASINS -> Einzugsgebiet-Polygon + AOI-Box -> static_data/
   download_glaciers.py     # RGI v7 Region 12 Gletscherpolygone -> static_data/
   download_rivers.py       # HydroRIVERS, Einzugsgebiet oberhalb Staudamm -> static_data/
   download_reservoirs.py   # HydroLAKES Stausee-Seed -> static_data/
   derive_reservoir.py      # S1-Wasserausdehnung -> echter Stausee-Footprint -> static_data/
+
+S1-Orbit-Auswahl (einmalig pro AOI-Box, read-only / nur Stichprobe):
+  probe_coverage.py        # Stufe A: Footprint-Coverage -> Kandidaten-Phasen (gratis)
+                           # Stufe B (--sample N): N Testdateien je Phase laden,
+                           #   echte valid_px_pct messen -> bester Orbit = s1_anchor
 ```
+
+Die zentrale AOI-Definition (Clip-Box + S1-Anchor je AOI) liegt in `aoi_config.py` — eine einzige Quelle, aus der alle Skripte importieren.
+
+### Einzugsgebiet als AOI (Catchment)
+
+Statt einer groben Box ist das AOI das **Einzugsgebiet oberhalb des Damms**. `download_catchments.py` laedt HydroBASINS (lev12), lokalisiert das Sub-Basin am Damm (Pour-Point) und unioniert per Fliess-Topologie (`HYBAS_ID`/`NEXT_DOWN`) alle stromaufwaerts gelegenen Sub-Basins zu einem Catchment-Polygon (`static_data/catchments.geojson`). Dessen Bounding-Box (+ Puffer) ist die `clip_box` fuer den Download; das Polygon maskiert die Statistik in `extract_timeseries.py` — `valid_px_pct` wird dadurch **catchment-relativ** (Nenner = Catchment-Pixel, nicht die ganze Box). Das loest drei Dinge: (1) trimmt irrelevante Box-Ecken, (2) garantiert die volle Wasserscheide inkl. aller Zufluesse (Enguri: oestliche Svaneti-Quellfluesse, die die alte Box abschnitt), (3) macht Schnee/Gletscher hydrologisch sinnvoll — die Kazbek/Gergeti-Gletscher fallen bei Zhinvali korrekt raus (entwaessern in den Terek/Norden).
 
 Drive-Ordnerstruktur: `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`
 
@@ -59,7 +74,7 @@ SAR-Wasserklassifikation haengt von der Aufnahmegeometrie ab (Layover/Shadow je 
 
 ### Reservoir-Footprint aus S1
 
-Die `reservoir_area_km2` misst Wasser **nur innerhalb des Stausees**, getrennt von der AOI-weiten Wasserflaeche (die auch Fluesse enthaelt). Da HydroLAKES die Seen stark unterschaetzt, leitet `derive_reservoir.py` den Footprint aus den eigenen S1-Daten ab: ueber alle vollflaechigen Szenen wird eine **Wasser-Haeufigkeitskarte** akkumuliert; Pixel mit Wasser in >= 25% der Aufnahmen (occurrence-basiert, vgl. Pekel et al. 2016) bilden den Stausee, reduziert auf die mit dem HydroLAKES-Seed verbundene Komponente. Der Schwellenwert ist sensitivitaetsgeprueft (Flaeche aendert sich nur ±5–9% ueber 0,10–0,50, kein Fluss-Leck). Ergebnis: Enguri 9,86 km², Zhinvali 11,19 km² (vs. real ~13 / ~11,5). Das Reservoir-Signal ist ~5x (Enguri) bis ~10x (Zhinvali) ruhiger als die AOI-Gesamtwasserflaeche und zeigt den saisonalen Speichergang. Hinweis: Enguri ist ein tiefer Schluchtspeicher — grosser Pegelhub bei kleiner Flaechenaenderung. Ein absoluter Wasserstand liesse sich daraus nur mit Bathymetrie ableiten; frei verfuegbare DEMs (Copernicus GLO-30) haben den Stausee als flache Wasserflaeche aufgenommen (keine Bathymetrie), und Satelliten-Altimetrie deckt diese kleinen Bergstauseen nicht ab. Daher wird der Speicher ueber die Flaeche ueberwacht, nicht ueber einen absoluten Pegel.
+Die `reservoir_area_km2` misst Wasser **nur innerhalb des Stausees**, getrennt von der AOI-weiten Wasserflaeche (die auch Fluesse enthaelt). Da HydroLAKES die Seen stark unterschaetzt, leitet `derive_reservoir.py` den Footprint aus den eigenen S1-Daten ab: ueber alle vollflaechigen Szenen wird eine **Wasser-Haeufigkeitskarte** akkumuliert; Pixel mit Wasser in >= 25% der Aufnahmen (occurrence-basiert, vgl. Pekel et al. 2016) bilden den Stausee, reduziert auf die mit dem HydroLAKES-Seed verbundene Komponente. Der Schwellenwert ist sensitivitaetsgeprueft (Flaeche aendert sich nur ±5–9% ueber 0,10–0,50, kein Fluss-Leck). Ergebnis (frueheres Box-AOI): Enguri 9,86 km², Zhinvali 11,19 km² (vs. real ~13 / ~11,5) — wird mit dem Catchment-AOI per Re-Download + `derive_reservoir.py` neu berechnet. Das Reservoir-Signal ist ~5x (Enguri) bis ~10x (Zhinvali) ruhiger als die AOI-Gesamtwasserflaeche und zeigt den saisonalen Speichergang. Hinweis: Enguri ist ein tiefer Schluchtspeicher — grosser Pegelhub bei kleiner Flaechenaenderung. Ein absoluter Wasserstand liesse sich daraus nur mit Bathymetrie ableiten; frei verfuegbare DEMs (Copernicus GLO-30) haben den Stausee als flache Wasserflaeche aufgenommen (keine Bathymetrie), und Satelliten-Altimetrie deckt diese kleinen Bergstauseen nicht ab. Daher wird der Speicher ueber die Flaeche ueberwacht, nicht ueber einen absoluten Pegel.
 
 ### Cache & Resume
 
@@ -120,9 +135,17 @@ NASA Earthdata Login:
 
 ```bash
 # 1. Statische Geodaten einmalig laden
+python download_catchments.py   # HydroBASINS Einzugsgebiet -> catchments.geojson + clip_box
+                                # (clip_box-Werte in aoi_config.py eintragen)
 python download_glaciers.py     # RGI v7 Gletscher (NSIDC, NASA-Login)
 python download_rivers.py       # HydroRIVERS Einzugsgebiet (oeffentlich)
 python download_reservoirs.py   # HydroLAKES Stausee-Seed (oeffentlich)
+
+# 1b. Pro AOI-Box einmalig den S1-Orbit-Anchor bestimmen (zweistufig)
+python probe_coverage.py             # Stufe A: nur Footprint-Screen (gratis)
+python probe_coverage.py --sample 3  # Stufe B: 3 Testdateien je Kandidaten-Phase laden,
+                                     #   echte valid_px_pct messen -> besten s1_anchor je AOI
+                                     #   in aoi_config.py eintragen, DANN download_s1.py
 
 # 2. Satellitendaten herunterladen und prozessieren
 python download_hls.py          # OPERA DSWx-HLS (optisch) -> Google Drive
@@ -140,10 +163,13 @@ streamlit run app.py
 | Skript | Funktion |
 |--------|----------|
 | `download_hls.py` | OPERA DSWx-HLS (optisch, nur B01_WTR — Wolke ueber Flag 253) nach Google Drive laden |
-| `download_s1.py` | OPERA DSWx-S1 (Radar, B01_WTR) nach Google Drive laden |
-| `download_common.py` | Gemeinsame Logik beider Downloads: Auth, Drive, Footprint-Vorfilter, Clipping, MGRS-Namen (wird nicht direkt ausgefuehrt) |
-| `extract_timeseries.py` | Pro Datum Kachel-Mosaik bilden, S1 auf verankerten Orbit filtern, mit RGI-Gletschern + Stausee-Footprint verschneiden (`reservoir_area_km2`), Zeitreihen als CSV + Parquet speichern (mit Per-Datum-Cache) |
+| `download_s1.py` | OPERA DSWx-S1 (Radar, B01_WTR) nach Google Drive laden. `orbit_filter`: laedt NUR den verankerten Orbit (`s1_anchor`, eine 12-Tage-Phase) -> ~1/4 der Tage |
+| `download_common.py` | Gemeinsame Logik beider Downloads: Auth, Drive, Footprint-Vorfilter, **S1-Orbit-Vorfilter** (`orbit_phase`, nur Anchor-Phase), Clipping, MGRS-Namen. Robuster Download via requests-Session mit hartem Read-Timeout (kein Haengen) + Retry/Backoff fuer transiente 5xx/429 (wird nicht direkt ausgefuehrt) |
+| `extract_timeseries.py` | Pro Datum Kachel-Mosaik bilden, auf das Catchment-Polygon maskieren (`valid_px_pct` catchment-relativ), S1 auf verankerten Orbit filtern, mit RGI-Gletschern + Stausee-Footprint verschneiden (`reservoir_area_km2`), Zeitreihen als CSV + Parquet speichern (mit Per-Datum-Cache) |
 | `probe_orbits.py` | Diagnose (read-only): S1-Orbit-Metadaten pruefen (Satellit, Phase) — validiert das Orbit-Dedup |
+| `probe_coverage.py` | Zweistufiger S1-Orbit-Selektor (vor Re-Download). Stufe A: Footprint-Coverage je Datum -> Kandidaten-Phasen (gratis). Stufe B (`--sample N`): N Testdateien je Phase laden, mit derselben Maschinerie wie der echte Lauf (Mosaik + Catchment-Maske) die echte `valid_px_pct` messen -> objektiv bester Orbit als `s1_anchor` |
+| `aoi_config.py` | Zentrale AOI-Definition (clip_box, dam, s1_anchor, Display-Felder) — Single Source of Truth, von allen Skripten importiert (kein Skript zum Ausfuehren) |
+| `download_catchments.py` | HydroBASINS-Einzugsgebiet oberhalb des Damms ableiten (Pour-Point, Upstream-Union) -> catchments.geojson + neue clip_box |
 | `download_glaciers.py` | RGI v7 Region 12 Gletscherpolygone von NSIDC laden (via earthaccess) |
 | `download_rivers.py` | HydroRIVERS laden, auf Einzugsgebiet oberhalb des Staudamms filtern (Fliessnetz-Topologie), auf AOI clippen |
 | `download_reservoirs.py` | HydroLAKES laden, Stausee-Seed-Polygon extrahieren (Ansatzpunkt fuer derive_reservoir.py) |

@@ -4,15 +4,23 @@ Satellite monitoring of the snow–glacier–reservoir water chain in the Georgi
 ## 1. Projektziel & Geographie
 Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Georgien) zur Analyse der Verbindung von Schneeschmelze, Gletscherrückgang und Talsperren-Wasserständen.
 
+AOI = Einzugsgebiet oberhalb des Damms (HydroBASINS lev12, siehe download_catchments.py).
+Zentrale Definition in `aoi_config.py` (Single Source of Truth, alle Skripte importieren daraus).
+
 ### AOI 1: Enguri (West-Georgien / Svaneti)
-- Bounding Box (clip_box): (41.70, 42.55, 42.80, 43.15) [Format: min_lon, min_lat, max_lon, max_lat]
-- Reservoir Center Point: (42.032, 42.753)
-- Fokus: Riesiges Wassereinzugsgebiet, starke Vergletscherung rund um Mestia.
+- clip_box (= Catchment-bbox + 0.02° Puffer): (41.8467, 42.7294, 43.1658, 43.2783)
+- Catchment-Fläche: ~3 139 km² (HydroBASINS lev12, konvergiert ab lev09)
+- Dam / Pour-Point: (42.032, 42.753); s1_anchor 20240830 (Phase 7, 51 Szenen, mean valid 99.4%
+  per Sample; Footprint-Wahl Phase 0 verworfen, deren Startdatum nur 59.5% valid)
+- Fokus: starke Vergletscherung Svaneti; neue Box reicht bis ~43.17 E (östliche Quellflüsse
+  Ushguli, die die alte Box bei maxx=42.80 abschnitt).
 
 ### AOI 2: Zhinvali (Ost-Georgien / Kazbegi)
-- Bounding Box (clip_box): (44.30, 42.00, 45.15, 42.80)
-- Reservoir Center Point: (44.771, 42.133)
-- Fokus: Beinhaltet den Gergeti-Gletscher am Mount Kazbek im Norden und die Stufe zum Zhinvali-Stausee im Süden.
+- clip_box (= Catchment-bbox + 0.02° Puffer): (44.3133, 42.0008, 45.245, 42.6283)
+- Catchment-Fläche: ~2 089 km² (HydroBASINS lev12, konvergiert ab lev10)
+- Dam / Pour-Point: (44.771, 42.133); s1_anchor 20240825 (Phase 1, 53 Szenen; stabil ggü. alt)
+- Fokus: Aragvi-Becken bis ~42.61 N. Kazbek/Gergeti-Gletscher liegen AUSSERHALB (entwässern
+  in den Terek/Norden) — hydrologisch korrekt ausgeschlossen.
 
 ---
 
@@ -98,7 +106,7 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
 
 ---
 
-## 3. Aktueller Bearbeitungsstand (Stand: 2026-06-01)
+## 3. Aktueller Bearbeitungsstand (Stand: 2026-06-02)
 
 - **Stufe 1 fertig:** HLS + S1 Download Enguri + Zhinvali komplett im Drive (MGRS-getaggt).
 - **Stufe 2 fertig:** HLS- UND S1-Zeitreihen berechnet. Coverage-Bug (Mosaik-Clip) gefixt,
@@ -114,22 +122,58 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (`derive_reservoir.py`) + `reservoir_area_km2` in den S1-Parquets, Orbit fest verankert.
   Details siehe Abschnitt "Reservoir-Polygone + Fuellwerte" unten.
 
-### GEPLANT (vom User angeregt 2026-06-01): AOI ans Einzugsgebiet anpassen (braucht Neu-Download!)
-- Beobachtung: Die rechteckigen clip_box-AOIs haben irrelevante Bereiche (Enguri Suedwesten leer,
-  Zhinvali Sueden zu viel) und schneiden evtl. relevante Wasserscheide/Zufluesse ab.
-- Idee: AOI nicht als grobe Box, sondern aus dem **Einzugsgebiet oberhalb des Damms** ableiten
-  (Wasserscheide). Quelle: HydroBASINS (HydroSHEDS-Familie, wie HydroRIVERS) - Damm als Pour-Point,
-  Upstream-Basins per Topologie unionieren -> Catchment-Polygon; oder DEM-Delineation (pysheds/
-  whitebox). AOI-bbox dann = Catchment-bbox (+ kleiner Puffer).
-- Loest 3 Dinge: (1) trimmt irrelevante Ecken, (2) garantiert volle Wasserscheide + alle Zufluesse,
-  (3) macht Schnee/Gletscher HYDROLOGISCH sinnvoll - z.B. fielen die Kazbek-Gletscher bei Zhinvali
-  korrekt raus (entwaessern in den Terek/Norden, nicht in den Zhinvali). Ersetzt zugleich die
-  frueher notierte "Einzugsgebiets-Maske fuer Schnee/Gletscher".
-- ACHTUNG Kosten: Neue clip_box -> kompletter Re-Download (HLS + S1, andere MGRS-Kacheln/Footprint)
-  + Neuberechnung (derive_reservoir, extract_timeseries) + Re-Clip der statischen Daten. Mehrstuendig.
-  Bewusst planen, nicht nebenbei.
-- User-Einschaetzung (2026-06-01): grosser Umbau, aber technisch deutlich sauberer -> lohnt sich;
-  als naechste groessere Ueberarbeitung eingeplant.
+### Catchment-AOI: CODE FERTIG (2026-06-02), Re-Download durch User ausstehend
+Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
+- **Schritt 0 (fertig):** `aoi_config.py` als Single Source of Truth (clip_box, dam, s1_anchor,
+  Display-Felder). download_common / extract_timeseries / derive_reservoir / download_rivers /
+  download_reservoirs / app.py importieren daraus. Verhaltensneutral verifiziert (alte Werte).
+- **Schritt 1 (fertig):** `download_catchments.py` (HydroBASINS lev01-12 EU, ~361 MB einmalig).
+  Pour-Point=Damm, Upstream-BFS (HYBAS_ID/NEXT_DOWN) -> dissolve -> catchments.geojson.
+  Levels 7-12 verglichen: feine Level leaken NICHT stromabwärts (Level 7 tat das). Flächen
+  konvergieren Enguri ab lev09 (3139 km²), Zhinvali ab lev10 (2089 km²). lev12 gewählt.
+  Validiert: Reservoirs+Dämme innen, Kazbek (44.52/42.70) AUSSERHALB Zhinvali, Reservoir-Bounds
+  passen in neue clip_box. Neue clip_box-Werte in aoi_config.py eingetragen.
+- **Schritt 2 (Vektor fertig):** download_rivers.py (477 Segmente) + download_reservoirs.py
+  (Seeds enguri 4.85 / zhinvali 5.65 km²) auf neue Box neu geclippt. glaciers braucht kein Re-Run.
+- **Schritt 3 (fertig, zweistufig):** `probe_coverage.py`. Stufe A (gratis): Footprint-Coverage
+  je Datum + 12-Tage-Phasen -> Kandidaten-Phasen (filtert kurze S1C-Spuren raus). Stufe B
+  (`--sample N`): laedt N Testdateien je Kandidaten-Phase, mosaikiert + clippt + catchment-maskiert
+  mit DERSELBEN Maschinerie wie der echte Lauf (extract_timeseries.mosaic_tiles/extract_s1_stats)
+  und misst die ECHTE valid_px_pct -> objektiv bester Orbit. Grund: Footprint-Coverage trennt die
+  vollen Orbits kaum (alle ~99%), aber die Pixel-Coverage kann je auf-/absteigend wegen SAR-
+  Layover/Shadow abweichen. ERGEBNIS --sample 3 (echte valid_px_pct, catchment-relativ):
+  * enguri: Footprint-Wahl war Phase 0 (20240823), ABER deren Startdatum nur 59.5% valid ->
+    Phase 7 (20240830) gewinnt (mean 99.4%, min 99.4%, 51 Tage). Anchor auf 20240830 geaendert.
+  * zhinvali: Phase 1 (20240825) bleibt (99.9%, 53 Tage). WICHTIG: Phase 7 dort nur ~7% valid
+    (Footprint sagte >=99%!) - ohne Stufe B waere das ein Desaster gewesen.
+  * Lehre: Orbit-Geometrie ist PRO AOI verschieden (Phase 7 = best bei enguri, worst bei
+    zhinvali) -> Orbit muss pro AOI an echten Pixeln gewaehlt werden, nicht per Footprint.
+- **Orbit-Filter im DOWNLOAD (neu):** download_s1.py hat `"orbit_filter": True`; download_common
+  filtert nach dem Footprint-Vorfilter zusaetzlich auf die s1_anchor-Phase (orbit_phase()==0) ->
+  laedt NUR den einen Orbit (~1/4 der Tage). Verifiziert im Lauf: Enguri 51/182, Zhinvali 53/183
+  Tage. HLS NICHT gefiltert (braucht alle klaren Tage). Vorher zog der Download alle Orbits.
+- **Download-Haertung (download_common.download_and_clip):** umgestellt von fsspec auf eine
+  authentifizierte requests-Session (earthaccess.get_requests_https_session) mit HARTEM Read-
+  Timeout HTTP_TIMEOUT=(15,180)s -> kein endloses Haengen mehr bei toten Sockets (fsspec hatte
+  kein Read-Timeout, der Lauf blieb bei PODAAC-Problemen stehen). MAX_RETRIES=5, Backoff
+  2/4/8/16/32s, RETRYABLE_STATUS={429,500,502,503,504}. probe_coverage.py Stufe B nutzt dieselbe
+  requests-Session. Erfahrung Re-Download: PODAAC wirft sporadisch 5xx (transient -> Resume-Lauf
+  holt sie nach) + vereinzelt 404 (zurueckgezogene/reprozessierte Granules -> bleiben weg, ok).
+  Resume-sicher: download_*.py erneut starten ueberspringt vorhandene Drive-Dateien.
+- **Datenstand Re-Download (laufend):** S1 fertig (Enguri 204 Dateien/51 Tage, Zhinvali 272/53,
+  0 Fehler). HLS laeuft (Enguri 1053/1059, 6 uebrig: 5x 502 transient + 1x 404). Danach
+  Resume-Lauf fuer die 502er, dann derive_reservoir + extract_timeseries --refresh.
+- **Schritt 6 (fertig):** Catchment-Polygon-Maske in extract_timeseries.py (`load_catchment` +
+  `_catchment_mask`, reuse rasterize_glaciers). WICHTIG: valid_px_pct/cloud sind jetzt
+  CATCHMENT-relativ (Nenner = Catchment-Pixel, sonst würde die große Box alles unter die
+  90/95%-Schwelle drücken). Backward-kompatibel (ohne catchments.geojson exakt altes Verhalten).
+  app.py: Catchment-Kontur statt bbox auf der Karte. AppTest beide AOIs 0 Exceptions.
+- **Schritte 4/5 (AUSSTEHEND, User fährt selbst):** (a) Drive `OPERA_DSWx/{hls,s1}/{enguri,
+  zhinvali}/` manuell leeren (alte Clips passen nicht zur neuen Box; KEIN Lösch-Skript im Repo),
+  (b) download_s1.py + download_hls.py (neue MGRS-Kacheln), (c) derive_reservoir.py +
+  extract_timeseries.py --refresh. Mehrstündig. Danach: reservoir_area_km2 + Schnee/Gletscher
+  neu, Doku-Zahlen finalisieren (README markiert die alten 9,86/11,19 km² als "neu zu berechnen").
+- DEM-Delineation war Fallback, NICHT nötig (HydroBASINS lev12 ausreichend).
 
 ### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
 - User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen

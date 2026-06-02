@@ -29,6 +29,7 @@ from pathlib import Path
 
 import earthaccess
 import rioxarray as rxr
+from rasterio.io import MemoryFile
 from dotenv import load_dotenv
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
@@ -43,35 +44,38 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="earthaccess")
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-# Parent folder in Google Drive; s1/ and hls/ live underneath it
-DRIVE_PARENT = "OPERA_DSWx"
-
-AOI_1 = {
-    "name": "enguri",
-    "label": "Enguri Talsperre + Svaneti",
-    "bbox": (41.70, 42.55, 42.80, 43.15),
-    "clip_box": (41.70, 42.55, 42.80, 43.15),
-}
-
-AOI_2 = {
-    "name": "zhinvali",
-    "label": "Zhinvali Talsperre + Gergeti",
-    "bbox": (44.30, 42.00, 45.15, 42.80),
-    "clip_box": (44.30, 42.00, 45.15, 42.80),
-}
-
-AOIS = [AOI_1, AOI_2]
+# AOI definition (bbox / clip_box / DRIVE_PARENT) is centralized in aoi_config.py
+from aoi_config import AOI_LIST as AOIS, AOI_1, AOI_2, DRIVE_PARENT  # noqa: F401
 
 DATE_START = "2024-08-01"
 DATE_END   = datetime.today().strftime("%Y-%m-%d")
 
 NODATA      = 255
 MAX_WORKERS = 2     # conservative to avoid RAM overload / crashes
-MAX_RETRIES = 3
+MAX_RETRIES = 5     # PODAAC occasionally returns 5xx; retry a few times
+# (connect, read) timeout in seconds for each HTTP request. The read timeout is
+# the key fix against hangs: a stalled socket aborts instead of blocking forever.
+HTTP_TIMEOUT = (15, 180)
+# HTTP status codes worth retrying (transient server-side / rate-limit errors).
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 # Footprint pre-filter: keep a date only if the union of its tile footprints
 # covers at least this fraction of the AOI (skips partial-coverage dates).
 FOOTPRINT_MIN_COVER = 0.99
+
+# Sentinel-1 ground-track repeat cycle. For S1 we additionally keep only the
+# dates that share the AOI's chosen relative orbit (s1_anchor's 12-day phase),
+# so the download pulls just that one orbit (~1/4 of the dates) instead of all
+# of them - the same orbit extract_timeseries.py anchors the series to.
+S1_REPEAT_DAYS = 12
+
+
+def orbit_phase(date_str: str, anchor: str) -> int:
+    """12-day repeat phase of a date relative to an anchor (both YYYYMMDD).
+    Dates of the same S1 relative orbit share the same phase; phase 0 == anchor."""
+    d = datetime.strptime(date_str, "%Y%m%d").date().toordinal()
+    a = datetime.strptime(anchor, "%Y%m%d").date().toordinal()
+    return (d - a) % S1_REPEAT_DAYS
 
 
 # ─────────────────────────────────────────────
@@ -212,25 +216,35 @@ def covered_dates(granules, aoi: dict) -> set[str]:
     return keep
 
 
-def download_and_clip(fs, url: str, clip_box: tuple) -> bytes | None:
-    """Download, clip to AOI bbox, return GeoTIFF bytes. Retries with backoff."""
+def download_and_clip(session, url: str, clip_box: tuple) -> bytes | None:
+    """Download a granule via an authenticated requests session, clip to the AOI
+    bbox in-memory and return GeoTIFF bytes. Retries transient errors with
+    exponential backoff. The HTTP_TIMEOUT read deadline prevents a stalled socket
+    from hanging a worker forever (the previous fsspec path had no read timeout)."""
     for attempt in range(MAX_RETRIES):
         try:
-            with fs.open(url) as f:
-                da = rxr.open_rasterio(f, masked=True)
-            clipped = da.rio.clip_box(
-                minx=clip_box[0], miny=clip_box[1],
-                maxx=clip_box[2], maxy=clip_box[3],
-                crs="EPSG:4326",
-            )
-            if clipped.size == 0:
-                return None
-            buf = io.BytesIO()
-            clipped.rio.to_raster(buf, driver="GTiff", compress="deflate")
-            return buf.getvalue()
+            resp = session.get(url, timeout=HTTP_TIMEOUT)
+            if resp.status_code in RETRYABLE_STATUS:
+                raise IOError(f"HTTP {resp.status_code}")
+            resp.raise_for_status()
+
+            # Open the downloaded bytes as an in-memory raster, then clip.
+            with MemoryFile(resp.content) as mf:
+                with mf.open() as ds:
+                    da = rxr.open_rasterio(ds, masked=True)
+                    clipped = da.rio.clip_box(
+                        minx=clip_box[0], miny=clip_box[1],
+                        maxx=clip_box[2], maxy=clip_box[3],
+                        crs="EPSG:4326",
+                    )
+                    if clipped.size == 0:
+                        return None
+                    buf = io.BytesIO()
+                    clipped.rio.to_raster(buf, driver="GTiff", compress="deflate")
+                    return buf.getvalue()
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(min(60, 2 ** (attempt + 1)))  # 2,4,8,16,32s
             else:
                 print(f"   ERROR after {MAX_RETRIES} attempts: {Path(url).name}: {e}")
                 return None
@@ -267,7 +281,19 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
     print(f"  -> {len(keep_dates)}/{n_dates_total} dates cover >= "
           f"{FOOTPRINT_MIN_COVER*100:.0f}% of AOI (rest skipped before download)")
 
-    fs = earthaccess.get_fsspec_https_session()
+    # S1 orbit pre-filter: keep only the AOI's chosen relative orbit so we download
+    # one consistent look geometry (~1/4 of the dates), not every orbit. Applied
+    # only for collections flagged orbit_filter (S1); HLS keeps all dates.
+    anchor = aoi.get("s1_anchor")
+    if collection.get("orbit_filter") and anchor:
+        before = len(keep_dates)
+        keep_dates = {d for d in keep_dates if orbit_phase(d, anchor) == 0}
+        print(f"  -> orbit filter (anchor {anchor}, 12-day phase 0): "
+              f"{len(keep_dates)}/{before} dates kept (one relative orbit)")
+
+    # Authenticated requests session (supports a hard read timeout, unlike the
+    # fsspec session) - shared across the download threads.
+    session = earthaccess.get_requests_https_session()
 
     urls_to_process = []
     for granule in granules:
@@ -289,7 +315,7 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
     uploaded = skipped = 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
-            executor.submit(download_and_clip, fs, url, aoi["clip_box"]): (out_name, layer)
+            executor.submit(download_and_clip, session, url, aoi["clip_box"]): (out_name, layer)
             for url, out_name, layer in urls_to_process
         }
         for future in tqdm(as_completed(futures), total=len(futures), desc=f"  {aoi['name']}"):

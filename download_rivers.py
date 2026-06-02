@@ -37,13 +37,10 @@ RIVERS_SHP_GLOB = "HydroRIVERS_v10_eu.shp"
 
 OUTPUT_GEOJSON = STATIC_DIR / "georgia_rivers.geojson"
 
-# AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat).
-# The dam point defines the catchment outlet: only rivers UPSTREAM of it
-# (i.e. that feed the reservoir) are kept.
-AOIS = {
-    "enguri":   {"bbox": (41.70, 42.55, 42.80, 43.15), "dam": (42.032, 42.753)},
-    "zhinvali": {"bbox": (44.30, 42.00, 45.15, 42.80), "dam": (44.771, 42.133)},
-}
+# AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat) come from
+# aoi_config.py. The dam point defines the catchment outlet: only rivers UPSTREAM
+# of it (i.e. that feed the reservoir) are kept.
+from aoi_config import AOIS
 
 # ORD_FLOW is the logarithmic flow-order class (lower value = larger river).
 # Keep classes <= this threshold. 8 includes the small glacial-fed brooks

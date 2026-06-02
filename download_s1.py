@@ -15,6 +15,10 @@ S1 = {
     "short_name":      "OPERA_L3_DSWX-S1_V1",
     "layers":          ["B01_WTR"],
     "drive_subfolder": "s1",
+    # Download only the AOI's anchored relative orbit (one 12-day phase), so we
+    # pull ~1/4 of the dates instead of every orbit. The same orbit the series
+    # is anchored to in extract_timeseries.py (aoi_config.s1_anchor).
+    "orbit_filter":    True,
 }
 
 if __name__ == "__main__":
