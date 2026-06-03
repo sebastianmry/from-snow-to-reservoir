@@ -34,6 +34,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -44,11 +45,12 @@ from rasterio.enums import Resampling
 
 from aoi_config import AOIS, AOI_1, AOI_2
 from extract_timeseries import (
-    authenticate, get_folder_id, list_tifs_in_folder, read_bytes,
     parse_filename, mosaic_tiles, load_catchment, load_glacier_mask,
     find_rgi, rasterize_glaciers,
     NODATA, WATER_VALUES, SNOW_VALUE, CLOUD_WTR_VALUE, DRIVE_PARENT,
 )
+# Tile storage backend (Google Drive by default, local dir for headless CI).
+from storage import get_store, ROOT
 
 OVERLAY_DIR = Path("static_data") / "overlays"
 SENSORS     = ["s1", "hls"]
@@ -119,10 +121,10 @@ def _classify_hls(wtr: np.ndarray, catch: np.ndarray, glacier: np.ndarray) -> np
     return rgba
 
 
-def _list_wtr_by_date(drive, folder_id: str) -> dict[str, list]:
-    """Group the B01_WTR tiles in a Drive folder by acquisition date."""
+def _list_wtr_by_date(store, folder_id: str) -> dict[str, list]:
+    """Group the B01_WTR tiles in a store folder by acquisition date."""
     by_date: dict[str, list] = {}
-    for f in list_tifs_in_folder(drive, folder_id):
+    for f in store.list_tifs(folder_id):
         meta = parse_filename(f["title"])
         if not meta:
             continue
@@ -132,7 +134,7 @@ def _list_wtr_by_date(drive, folder_id: str) -> dict[str, list]:
     return by_date
 
 
-def render_site_sensor(drive, aoi: dict, sensor: str, sensor_root: str,
+def render_site_sensor(store, aoi: dict, sensor: str, sensor_root: str,
                        refresh: bool):
     site = aoi["name"]
     dates = _parquet_dates(site, sensor)
@@ -145,11 +147,11 @@ def render_site_sensor(drive, aoi: dict, sensor: str, sensor_root: str,
     (out_dir / "bounds.json").write_text(json.dumps(
         {"bounds": [[min_lat, min_lon], [max_lat, max_lon]]}))
 
-    site_folder = get_folder_id(drive, site, sensor_root)
+    site_folder = store.get_folder_id(site, sensor_root)
     if not site_folder:
-        print(f"  Drive folder not found for {site}/{sensor} - skipping")
+        print(f"  Store folder not found for {site}/{sensor} - skipping")
         return
-    by_date = _list_wtr_by_date(drive, site_folder)
+    by_date = _list_wtr_by_date(store, site_folder)
 
     catchment = load_catchment(site)
     glaciers = None
@@ -166,10 +168,10 @@ def render_site_sensor(drive, aoi: dict, sensor: str, sensor_root: str,
             continue
         tiles = by_date.get(date_str)
         if not tiles:
-            print(f"  [{i:>3}/{len(dates)}] {date_str}: no tiles on Drive - skip")
+            print(f"  [{i:>3}/{len(dates)}] {date_str}: no tiles in store - skip")
             continue
         try:
-            mosaic = mosaic_tiles([read_bytes(f) for f in tiles], NODATA, aoi["clip_box"])
+            mosaic = mosaic_tiles([store.read_bytes(f) for f in tiles], NODATA, aoi["clip_box"])
             if mosaic is None:
                 print(f"  [{i:>3}/{len(dates)}] {date_str}: no readable tiles - skip")
                 continue
@@ -205,14 +207,14 @@ def main():
     want_aoi    = next((a for a in flt if a in {x["name"] for x in AOIS.values()}), None)
     want_sensor = next((a for a in flt if a in SENSORS), None)
 
-    print("Authenticating with Google Drive...")
-    drive = authenticate()
-    opera_root = get_folder_id(drive, DRIVE_PARENT, "root")
+    store = get_store()
+    print(f"Tile store: {os.environ.get('PIPELINE_STORE', 'drive')}")
+    opera_root = store.get_folder_id(DRIVE_PARENT, ROOT)
     if not opera_root:
         print(f"'{DRIVE_PARENT}' folder not found - run the download scripts first")
         sys.exit(1)
 
-    sensor_roots = {s: get_folder_id(drive, s, opera_root) for s in SENSORS}
+    sensor_roots = {s: store.get_folder_id(s, opera_root) for s in SENSORS}
 
     for aoi in [AOI_1, AOI_2]:
         if want_aoi and aoi["name"] != want_aoi:
@@ -225,7 +227,7 @@ def main():
             if not root:
                 print(f"  '{sensor}' folder not found under {DRIVE_PARENT} - skip")
                 continue
-            render_site_sensor(drive, aoi, sensor, root, args.refresh)
+            render_site_sensor(store, aoi, sensor, root, args.refresh)
 
     print(f"\nDone. Overlays in {OVERLAY_DIR}/")
 
