@@ -36,11 +36,12 @@ from rasterio.enums import Resampling
 
 # Reuse the proven Drive + mosaic machinery from the extraction pipeline.
 from extract_timeseries import (
-    authenticate, get_folder_id, list_tifs_in_folder, read_bytes,
     parse_filename, mosaic_tiles,
     NODATA, WATER_VALUES, MIN_TILES, S1_FULL_COVER_PCT,
     STATIC_DIR, DRIVE_PARENT, AOI_1, AOI_2,
 )
+# Tile storage backend (Google Drive by default, local dir for headless CI).
+from storage import get_store, ROOT
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
@@ -73,14 +74,14 @@ OUTPUT_GEOJSON = STATIC_DIR / "reservoirs.geojson"
 # WATER-FREQUENCY ACCUMULATION
 # ─────────────────────────────────────────────
 
-def build_water_frequency(drive, site_folder, clip_box):
+def build_water_frequency(store, site_folder, clip_box):
     """One pass over the S1 dates -> (freq, valid_count, reference_mosaic).
 
     All mosaics are aligned to the first full-coverage scene's grid via
     reproject_match, so the counts accumulate pixel-for-pixel. Only one mosaic
     is held in memory at a time; the accumulators are the only persistent arrays.
     """
-    files = [f for f in list_tifs_in_folder(drive, site_folder)
+    files = [f for f in store.list_tifs(site_folder)
              if "B01_WTR" in f["title"]]
 
     by_date: dict[str, list] = {}
@@ -102,7 +103,7 @@ def build_water_frequency(drive, site_folder, clip_box):
         if len(tiles) < MIN_TILES:
             continue
         try:
-            mosaic = mosaic_tiles([read_bytes(f) for f in tiles], NODATA, clip_box)
+            mosaic = mosaic_tiles([store.read_bytes(f) for f in tiles], NODATA, clip_box)
         except Exception as e:
             bar.write(f"      {date_str} mosaic error: {e}")
             continue
@@ -228,12 +229,12 @@ def main():
     print("Reservoir footprint from S1 water extent")
     print("=" * 55)
 
-    drive = authenticate()
-    opera_root = get_folder_id(drive, DRIVE_PARENT, "root")
+    store = get_store()
+    opera_root = store.get_folder_id(DRIVE_PARENT, ROOT)
     if not opera_root:
         print(f"'{DRIVE_PARENT}' folder not found - run download_s1.py first")
         return
-    s1_root = get_folder_id(drive, "s1", opera_root)
+    s1_root = store.get_folder_id("s1", opera_root)
     if not s1_root:
         print("s1 folder not found - run download_s1.py first")
         return
@@ -242,13 +243,13 @@ def main():
     for aoi in [AOI_1, AOI_2]:
         site = aoi["name"]
         print(f"\n--- {site} ---")
-        site_folder = get_folder_id(drive, site, s1_root)
+        site_folder = store.get_folder_id(site, s1_root)
         if not site_folder:
             print(f"    folder not found for {site} - skipping")
             continue
 
         freq, valid_count, reference, n_used = build_water_frequency(
-            drive, site_folder, aoi["clip_box"])
+            store, site_folder, aoi["clip_box"])
         if reference is None:
             print(f"    {site}: no full-coverage S1 scenes - skipped")
             continue

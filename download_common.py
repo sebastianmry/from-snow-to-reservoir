@@ -19,6 +19,7 @@ Drive folder structure:
 """
 
 import io
+import os
 import re
 import time
 import warnings
@@ -31,8 +32,6 @@ import earthaccess
 import rioxarray as rxr
 from rasterio.io import MemoryFile
 from dotenv import load_dotenv
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
 from shapely.geometry import Polygon, box as shp_box
 from shapely.ops import unary_union
 from tqdm import tqdm
@@ -46,6 +45,8 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="earthaccess")
 
 # AOI definition (bbox / clip_box / DRIVE_PARENT) is centralized in aoi_config.py
 from aoi_config import AOI_LIST as AOIS, AOI_1, AOI_2, DRIVE_PARENT  # noqa: F401
+# Tile storage backend (Google Drive by default, local dir for headless CI).
+from storage import get_store, ROOT
 
 DATE_START = "2024-08-01"
 DATE_END   = datetime.today().strftime("%Y-%m-%d")
@@ -81,60 +82,9 @@ def orbit_phase(date_str: str, anchor: str) -> int:
     return (d - a) % S1_REPEAT_DAYS
 
 
-# ─────────────────────────────────────────────
-# GOOGLE DRIVE
-# ─────────────────────────────────────────────
-
-def get_drive() -> GoogleDrive:
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("gdrive_credentials.json")
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-    gauth.SaveCredentialsFile("gdrive_credentials.json")
-    return GoogleDrive(gauth)
-
-
-def get_or_create_folder(drive: GoogleDrive, name: str, parent_id: str) -> str:
-    query = (
-        f"title='{name}' and mimeType='application/vnd.google-apps.folder' "
-        f"and '{parent_id}' in parents and trashed=false"
-    )
-    results = drive.ListFile({"q": query}).GetList()
-    if results:
-        return results[0]["id"]
-    folder = drive.CreateFile({
-        "title": name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [{"id": parent_id}],
-    })
-    folder.Upload()
-    return folder["id"]
-
-
-def get_existing_filenames(drive: GoogleDrive, folder_id: str) -> set[str]:
-    """All filenames in a folder, paginated (Drive returns max 100 per page)."""
-    filenames = set()
-    for page in drive.ListFile({
-        "q": f"'{folder_id}' in parents and trashed=false",
-        "maxResults": 1000,
-    }):
-        for f in page:
-            filenames.add(f["title"])
-    return filenames
-
-
-def upload_bytes_to_drive(drive: GoogleDrive, data: bytes, filename: str, folder_id: str):
-    f = drive.CreateFile({
-        "title": filename,
-        "parents": [{"id": folder_id}],
-        "mimeType": "image/tiff",
-    })
-    f.content = io.BytesIO(data)
-    f.Upload()
+# Folder navigation, listing, upload and download of tiles all go through the
+# storage backend (see storage.py): get_store(), store.ensure_folder(...),
+# store.existing_names(...), store.write(...).
 
 
 # ─────────────────────────────────────────────
@@ -257,15 +207,15 @@ def download_and_clip(session, url: str, clip_box: tuple) -> bytes | None:
 # PIPELINE
 # ─────────────────────────────────────────────
 
-def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
-    # Drive: OPERA_DSWx / hls|s1 / enguri|zhinvali
-    parent_id = get_or_create_folder(drive, DRIVE_PARENT, "root")
-    sub_id    = get_or_create_folder(drive, collection["drive_subfolder"], parent_id)
-    aoi_id    = get_or_create_folder(drive, aoi["name"], sub_id)
+def process_aoi(aoi: dict, collection: dict, store):
+    # Layout: OPERA_DSWx / hls|s1 / enguri|zhinvali
+    parent_id = store.ensure_folder(DRIVE_PARENT, ROOT)
+    sub_id    = store.ensure_folder(collection["drive_subfolder"], parent_id)
+    aoi_id    = store.ensure_folder(aoi["name"], sub_id)
 
-    print(f"  Fetching existing files from Drive...")
-    existing = get_existing_filenames(drive, aoi_id)
-    print(f"  -> {len(existing)} files already in Drive")
+    print(f"  Fetching existing files from store...")
+    existing = store.existing_names(aoi_id)
+    print(f"  -> {len(existing)} files already in store")
 
     print(f"  Searching {collection['short_name']} {DATE_START} -> {DATE_END}...")
     granules = earthaccess.search_data(
@@ -327,7 +277,7 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
             if data is None:
                 skipped += 1
                 continue
-            upload_bytes_to_drive(drive, data, out_name, aoi_id)
+            store.write(aoi_id, out_name, data)
             uploaded += 1
 
     print(f"  {aoi['name']}: {uploaded} uploaded, {skipped} skipped (empty/error)")
@@ -335,14 +285,15 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
 
 def run(collection: dict):
     """Entry point used by download_hls.py / download_s1.py."""
+    store_kind = os.environ.get("PIPELINE_STORE", "drive").lower()
     print("=" * 60)
-    print("FROM SNOW TO RESERVOIR - Download to Google Drive")
+    print("FROM SNOW TO RESERVOIR - Download OPERA tiles")
     print(f"Product  : {collection['short_name']}")
     print(f"Layers   : {', '.join(collection['layers'])}")
     print(f"Period   : {DATE_START} -> {DATE_END}")
     print(f"Coverage : footprint pre-filter >= {FOOTPRINT_MIN_COVER*100:.0f}% AOI, "
           f"all MGRS tiles, MGRS-tagged names")
-    print(f"Drive    : {DRIVE_PARENT}/{collection['drive_subfolder']}/<aoi>/")
+    print(f"Store    : {store_kind} -> {DRIVE_PARENT}/{collection['drive_subfolder']}/<aoi>/")
     print("=" * 60)
 
     print("\nNASA Earthdata Login...")
@@ -353,12 +304,12 @@ def run(collection: dict):
         earthaccess.login(strategy="interactive", persist=True)
     print("NASA Login OK")
 
-    print("\nGoogle Drive Login...")
-    drive = get_drive()
-    print("Google Drive OK")
+    print(f"\nOpening tile store ({store_kind})...")
+    store = get_store()
+    print("Store ready")
 
     for aoi in AOIS:
         print(f"\nAOI: {aoi['label']}")
-        process_aoi(aoi, collection, drive)
+        process_aoi(aoi, collection, store)
 
-    print("\nDone. Data available in Google Drive.")
+    print("\nDone. Tiles written to the store.")

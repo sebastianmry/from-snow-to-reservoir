@@ -21,6 +21,7 @@ Usage:
     python extract_timeseries.py
 """
 
+import os
 import re
 import csv
 import json
@@ -34,8 +35,8 @@ from rasterio.enums import Resampling
 import rioxarray  # noqa: F401  (registers the .rio accessor)
 from rioxarray.merge import merge_arrays
 import geopandas as gpd
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
+# Tile storage backend (Google Drive by default, local dir for headless CI).
+from storage import get_store, ROOT
 
 try:
     import pandas as pd
@@ -201,44 +202,9 @@ def _catchment_mask(catchment: gpd.GeoDataFrame | None, wtr_da, shape: tuple) ->
                               wtr_da.rio.transform(), shape)
 
 
-# ─────────────────────────────────────────────
-# AUTH
-# ─────────────────────────────────────────────
-
-def authenticate() -> GoogleDrive:
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("gdrive_credentials.json")
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-    gauth.SaveCredentialsFile("gdrive_credentials.json")
-    return GoogleDrive(gauth)
-
-
-# ─────────────────────────────────────────────
-# DRIVE HELPERS
-# ─────────────────────────────────────────────
-
-def get_folder_id(drive: GoogleDrive, name: str, parent_id: str) -> str | None:
-    query = (
-        f"title='{name}' and mimeType='application/vnd.google-apps.folder' "
-        f"and '{parent_id}' in parents and trashed=false"
-    )
-    results = drive.ListFile({"q": query}).GetList()
-    return results[0]["id"] if results else None
-
-
-def list_tifs_in_folder(drive: GoogleDrive, folder_id: str) -> list[dict]:
-    return drive.ListFile(
-        {"q": f"'{folder_id}' in parents and trashed=false and title contains '.tif'"}
-    ).GetList()
-
-
-def read_bytes(drive_file) -> bytes:
-    return drive_file.GetContentIOBuffer().read()
+# Folder navigation, tile listing and byte reads go through the storage backend
+# (see storage.py): get_store(), store.get_folder_id(...), store.list_tifs(...),
+# store.read_bytes(f).
 
 
 # ─────────────────────────────────────────────
@@ -575,8 +541,8 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
 
 def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
          recompute: bool = False):
-    print("Authenticating with Google Drive...")
-    drive = authenticate()
+    store = get_store()
+    print(f"Tile store: {os.environ.get('PIPELINE_STORE', 'drive')}")
 
     # ── RGI glacier data ─────────────────────
     print("\n--- RGI v7 Glacier Data ---")
@@ -591,7 +557,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
             glacier_masks[aoi["name"]] = None
 
     # Parent OPERA_DSWx folder holding hls/ and s1/
-    opera_root = get_folder_id(drive, DRIVE_PARENT, "root")
+    opera_root = store.get_folder_id(DRIVE_PARENT, ROOT)
     if not opera_root:
         print(f"  '{DRIVE_PARENT}' folder not found - run download_hls.py / download_s1.py first")
         return
@@ -600,7 +566,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
     if skip_s1:
         print("\n--- DSWx-S1 skipped (--skip-s1) ---")
     print("\n--- DSWx-S1 B01_WTR ---" if not skip_s1 else "", end="")
-    s1_root = get_folder_id(drive, "s1", opera_root) if not skip_s1 else None
+    s1_root = store.get_folder_id("s1", opera_root) if not skip_s1 else None
 
     for aoi in ([] if skip_s1 else [AOI_1, AOI_2]):
         site = aoi["name"]
@@ -613,12 +579,12 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
         if catchment is not None:
             print(f"  catchment polygon loaded for {site} (stats masked to basin)")
 
-        site_folder = get_folder_id(drive, site, s1_root) if s1_root else None
+        site_folder = store.get_folder_id(site, s1_root) if s1_root else None
         if not site_folder:
             print(f"  Folder not found for {site} (S1) - skipping")
             continue
 
-        files = [f for f in list_tifs_in_folder(drive, site_folder)
+        files = [f for f in store.list_tifs(site_folder)
                  if "B01_WTR" in f["title"]]
 
         # Group ALL tiles per date (multiple MGRS tiles cover the AOI)
@@ -665,7 +631,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                 save_cache(f"{site}_s1", cache)
                 continue
             try:
-                wtr_mosaic = mosaic_tiles([read_bytes(f) for f in wtr_files],
+                wtr_mosaic = mosaic_tiles([store.read_bytes(f) for f in wtr_files],
                                           NODATA, aoi["clip_box"])
                 if wtr_mosaic is None:
                     print("skipped (no readable tiles)")
@@ -703,7 +669,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
     if skip_hls:
         print("\n--- DSWx-HLS skipped (--skip-hls) ---")
     print("\n--- DSWx-HLS B01_WTR (cloud mask = WTR 253) ---" if not skip_hls else "", end="")
-    hls_root = get_folder_id(drive, "hls", opera_root) if not skip_hls else None
+    hls_root = store.get_folder_id("hls", opera_root) if not skip_hls else None
 
     if not skip_hls and not hls_root:
         print("  HLS folder not found - run download_hls.py first")
@@ -717,12 +683,12 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
             print(f"  catchment polygon loaded for {site} (stats masked to basin)")
         rows: list[dict] = []
 
-        site_folder = get_folder_id(drive, site, hls_root)
+        site_folder = store.get_folder_id(site, hls_root)
         if not site_folder:
             print(f"  Folder not found for {site} (HLS)")
             continue
 
-        files = list_tifs_in_folder(drive, site_folder)
+        files = store.list_tifs(site_folder)
 
         # Group ALL WTR tiles per date (multiple MGRS tiles cover the AOI).
         # Cloud masking comes from the WTR layer itself (value 253), so the
@@ -754,7 +720,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                 continue
             try:
                 # Mosaic all WTR tiles for this date into one AOI raster
-                wtr_mosaic = mosaic_tiles([read_bytes(f) for f in wtr_files],
+                wtr_mosaic = mosaic_tiles([store.read_bytes(f) for f in wtr_files],
                                           NODATA, aoi["clip_box"])
                 if wtr_mosaic is None:
                     print("skipped (no readable tiles)")

@@ -24,6 +24,10 @@ env/
 data/
 *.csv
 
+# Local tile store (storage.py LocalStore, e.g. CI or PIPELINE_STORE=local)
+opera_tiles/
+opera_local/
+
 # Parquet: raw outputs are ignored, but the small derived time series the
 # dashboard loads at runtime are force-included below.
 *.parquet
