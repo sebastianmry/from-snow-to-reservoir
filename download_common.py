@@ -207,6 +207,24 @@ def download_and_clip(session, url: str, clip_box: tuple) -> bytes | None:
 # PIPELINE
 # ─────────────────────────────────────────────
 
+def search_granules(**kwargs):
+    """earthaccess.search_data with retry + exponential backoff. NASA's CMR
+    occasionally returns a transient 5xx ("An Internal Error has occurred.");
+    a few retries keep the unattended weekly CI run from failing on a momentary
+    NASA-side hiccup (the tile download already retries the same way)."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            return earthaccess.search_data(**kwargs)
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                wait = min(60, 2 ** (attempt + 1))  # 2, 4, 8, ...
+                print(f"   CMR search failed ({e}); retry in {wait}s "
+                      f"({attempt + 1}/{MAX_RETRIES})")
+                time.sleep(wait)
+            else:
+                raise
+
+
 def process_aoi(aoi: dict, collection: dict, store):
     # Layout: OPERA_DSWx / hls|s1 / enguri|zhinvali
     parent_id = store.ensure_folder(DRIVE_PARENT, ROOT)
@@ -218,7 +236,7 @@ def process_aoi(aoi: dict, collection: dict, store):
     print(f"  -> {len(existing)} files already in store")
 
     print(f"  Searching {collection['short_name']} {DATE_START} -> {DATE_END}...")
-    granules = earthaccess.search_data(
+    granules = search_granules(
         short_name=collection["short_name"],
         bounding_box=aoi["bbox"],
         temporal=(DATE_START, DATE_END),
