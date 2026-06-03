@@ -55,10 +55,10 @@ SNOW_COLORS = {
 }
 
 SNOW_LABELS = {
-    "seasonal_snow_km2":     "Saisonaler Schnee",
-    "seasonal_snow_km2_est": "Saisonaler Schnee (coverage-korrigiert)",
-    "snow_on_glacier_km2":   "Schnee auf Gletscher",
-    "bare_ice_km2":          "Blankes Gletschereis",
+    "seasonal_snow_km2":     "Seasonal snow",
+    "seasonal_snow_km2_est": "Seasonal snow (coverage corrected)",
+    "snow_on_glacier_km2":   "Snow on glacier",
+    "bare_ice_km2":          "Bare glacier ice",
 }
 
 
@@ -271,7 +271,7 @@ def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
 
 OVERLAY_DIR = STATIC_DIR / "overlays"
 # Display label -> sensor subfolder
-OVERLAY_SENSORS = {"Wasser (S1)": "s1", "Schnee & Eis (HLS)": "hls"}
+OVERLAY_SENSORS = {"Water (S1)": "s1", "Snow & ice (HLS)": "hls"}
 
 
 @st.cache_data(show_spinner=False)
@@ -396,14 +396,14 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     if catchment is not None and not catchment.empty:
         folium.GeoJson(
             catchment.__geo_interface__,
-            name="Einzugsgebiet (Catchment)",
+            name="Catchment",
             style_function=lambda _: {
                 "color": "#5d6d7e",
                 "weight": 2.0,
                 "fillColor": "#5d6d7e",
                 "fillOpacity": 0.04,
             },
-            tooltip="Einzugsgebiet oberhalb des Staudamms",
+            tooltip="Catchment above the dam",
         ).add_to(m)
     else:
         folium.Rectangle(
@@ -412,7 +412,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             weight=1.5,
             dash_array="6,6",
             fill=False,
-            tooltip="Untersuchungsgebiet (AOI)",
+            tooltip="Area of interest (AOI)",
         ).add_to(m)
 
     # Glacier polygons - cool light violet so they stay distinct from the blue
@@ -435,7 +435,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
 
         # Single legend entry, but keep named/unnamed as separate GeoJson so only
         # named glaciers carry a tooltip. Both go into one FeatureGroup -> one toggle.
-        glacier_group = folium.FeatureGroup(name="RGI v7 Gletscher")
+        glacier_group = folium.FeatureGroup(name="RGI v7 glaciers")
         if not unnamed.empty:
             folium.GeoJson(unnamed.__geo_interface__,
                            style_function=glacier_style).add_to(glacier_group)
@@ -464,7 +464,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
         trib_feats = [f for f in smoothed if f["properties"].get("ORD_FLOW", 9) > MAIN_ORD]
         river_name = MAIN_RIVER.get(aoi["key"])
 
-        river_group = folium.FeatureGroup(name="Fluesse (HydroRIVERS)")
+        river_group = folium.FeatureGroup(name="Rivers (HydroRIVERS)")
         if trib_feats:
             folium.GeoJson(
                 {"type": "FeatureCollection", "features": trib_feats},
@@ -502,10 +502,10 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # paler river/water layers.
     if reservoir is not None and not reservoir.empty:
         area = reservoir.iloc[0].get("area_km2")
-        tip = f"Stausee-Footprint (S1)" + (f": {area:.2f} km²" if area is not None else "")
+        tip = f"Reservoir footprint (S1)" + (f": {area:.2f} km²" if area is not None else "")
         folium.GeoJson(
             reservoir.__geo_interface__,
-            name="Stausee-Footprint (S1)",
+            name="Reservoir footprint (S1)",
             style_function=lambda _: {
                 "fillColor": "#1f6fc0",
                 "color": "#0b3d66",
@@ -565,12 +565,12 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
 
 # Overlay legend swatches - colours match the rendered PNG classes (render_overlays.py).
 _OVERLAY_LEGEND = {
-    "s1": [("#1f6fc0", "Wasser")],
+    "s1": [("#1f6fc0", "Water")],
     "hls": [
-        ("#5ac8e6", "Saisonaler Schnee"),
-        ("#8e7cc3", "Schnee auf Gletscher"),
-        ("#5e4b8b", "Blankes Gletschereis"),
-        ("#1f6fc0", "Wasser"),
+        ("#5ac8e6", "Seasonal snow"),
+        ("#8e7cc3", "Snow on glacier"),
+        ("#5e4b8b", "Bare glacier ice"),
+        ("#1f6fc0", "Water"),
     ],
 }
 
@@ -589,7 +589,7 @@ def render_overlay_legend(sensor: str):
         chips += (
             '<span style="display:inline-flex;align-items:center;white-space:nowrap;">'
             '<span style="width:14px;height:0;border-top:2px solid #5e4b8b;'
-            'margin-right:6px;"></span>Gletschergrenze (RGI)</span>'
+            'margin-right:6px;"></span>Glacier boundary (RGI)</span>'
         )
     st.markdown(
         f'<div style="display:flex;flex-wrap:wrap;gap:6px 0;font-size:0.85rem;'
@@ -598,9 +598,9 @@ def render_overlay_legend(sensor: str):
     )
     if sensor == "s1":
         st.caption(
-            "DSWx-S1 (Radar, wolkenunabhaengig, 30-m-Raster). SAR erfasst vor allem "
-            "offene Wasserflaechen wie den Stausee; schmale Gebirgsfluesse fallen meist "
-            "unter die Pixelgroesse und werden kaum erkannt."
+            "DSWx-S1 (radar, cloud independent, 30 m grid). SAR mainly captures open "
+            "water such as the reservoir; narrow mountain rivers usually fall below the "
+            "pixel size and are barely detected."
         )
 
 
@@ -622,10 +622,10 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
         x=df["date"],
         y=df["water_km2"],
         mode="lines+markers",
-        name="AOI-Wasser gesamt (inkl. Fluesse)",
+        name="AOI water total (incl. rivers)",
         line=dict(color="#aab7c4", width=1.5, dash="dot"),
         marker=dict(size=3),
-        hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>AOI gesamt</extra>",
+        hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>AOI total</extra>",
     ))
 
     # Reservoir-only footprint - the headline signal, as a single clean line.
@@ -637,18 +637,18 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
             x=df["date"],
             y=df["reservoir_area_km2"],
             mode="lines+markers",
-            name="Stausee-Flaeche (Footprint)",
+            name="Reservoir area (footprint)",
             line=dict(color="#1a5276", width=2.5),
             marker=dict(size=4),
             connectgaps=False,
-            hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Stausee</extra>",
+            hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Reservoir</extra>",
         ))
 
     fig.update_layout(
-        title="Stausee-Wasserflaeche (DSWx-S1, ~12-Tage)",
+        title="Reservoir water area (DSWx-S1, ~12 day)",
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
         xaxis_title=None,
-        yaxis_title="Flaeche (km²)",
+        yaxis_title="Area (km²)",
         hovermode="x unified",
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -697,9 +697,9 @@ def chart_snow(df: pd.DataFrame) -> go.Figure:
         ))
 
     fig.update_layout(
-        title="Schnee- und Eiskomponenten (gestapelt)",
+        title="Snow and ice components (stacked)",
         xaxis_title=None,
-        yaxis_title="Flaeche (km²)",
+        yaxis_title="Area (km²)",
         hovermode="x unified",
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -722,12 +722,12 @@ st.set_page_config(
 )
 
 st.title("From Snow to Reservoir")
-st.caption("Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus")
+st.caption("Satellite monitoring of the snow, glacier and reservoir water chain in the Georgian Greater Caucasus")
 
 # ── Sidebar ──────────────────────────────────
 with st.sidebar:
-    st.header("Einstellungen")
-    aoi_label = st.selectbox("Einzugsgebiet", list(AOIS.keys()))
+    st.header("Settings")
+    aoi_label = st.selectbox("Area of interest", list(AOIS.keys()))
     aoi = AOIS[aoi_label]
 
     st.divider()
@@ -738,14 +738,14 @@ with st.sidebar:
 
 # ── Load data ────────────────────────────────
 # Snow / glacier come from HLS (optical), water comes from S1 (radar).
-with st.spinner("Lade Zeitreihen..."):
+with st.spinner("Loading time series..."):
     df_hls_full, is_mock_hls = load_timeseries(aoi["key"])
     df_s1_full,  is_mock_s1  = load_s1_timeseries(aoi["key"])
 
 if is_mock_hls or is_mock_s1:
     st.warning(
-        "Parquet-Datei(en) noch nicht vorhanden - Dashboard zeigt teils synthetische "
-        "Demo-Daten. extract_timeseries.py ausfuehren fuer echte Werte.",
+        "Parquet file(s) not present yet, so the dashboard shows partly synthetic "
+        "demo data. Run extract_timeseries.py for real values.",
         icon="⏳",
     )
 
@@ -754,7 +754,7 @@ min_date = min(df_hls_full["date"].min(), df_s1_full["date"].min()).date()
 max_date = max(df_hls_full["date"].max(), df_s1_full["date"].max()).date()
 
 date_range = st.sidebar.slider(
-    "Zeitraum",
+    "Time range",
     min_value=min_date,
     max_value=max_date,
     value=(min_date, max_date),
@@ -795,43 +795,43 @@ with col1:
         max_res    = res_series.max()
         latest_res = res_series.dropna().iloc[-1]
         st.metric(
-            "Stausee-Flaeche (S1, aktuell)",
+            "Reservoir area (S1, current)",
             f"{latest_res:.2f} km²",
             delta=f"Max: {max_res:.2f} km²",
             delta_color="off",
         )
     elif latest_w is not None:
         st.metric(
-            "Wasserflaeche (S1, aktuell)",
+            "Water area (S1, current)",
             f"{latest_w['water_km2']:.2f} km²",
             delta=f"Max: {max_water:.2f} km²",
             delta_color="off",
         )
     else:
-        st.metric("Wasserflaeche (S1, aktuell)", "Keine Daten")
+        st.metric("Water area (S1, current)", "No data")
 
 with col2:
     if latest_snow is not None:
         st.metric(
-            "Gesamtschnee (HLS, aktuell)",
+            "Total snow (HLS, current)",
             f"{latest_snow:.0f} km²",
             delta=f"Max: {max_snow:.0f} km²",
             delta_color="off",
         )
     else:
-        st.metric("Gesamtschnee (HLS, aktuell)", "Keine Daten")
+        st.metric("Total snow (HLS, current)", "No data")
 
 with col3:
     if latest_h is not None:
-        st.metric("Blankes Gletschereis", f"{latest_h['bare_ice_km2']:.1f} km²")
+        st.metric("Bare glacier ice", f"{latest_h['bare_ice_km2']:.1f} km²")
     else:
-        st.metric("Blankes Gletschereis", "Keine Daten")
+        st.metric("Bare glacier ice", "No data")
 
 with col4:
     st.metric(
-        "Szenen im Zeitraum",
-        f"{len(df_s1)} S1 (Wasser)",
-        delta=f"{len(df)} HLS (Schnee)",
+        "Scenes in range",
+        f"{len(df_s1)} S1 (water)",
+        delta=f"{len(df)} HLS (snow)",
         delta_color="off",
     )
 
@@ -841,8 +841,8 @@ st.divider()
 map_col, chart_col = st.columns([1, 1], gap="large")
 
 with map_col:
-    st.subheader("Untersuchungsgebiet")
-    with st.spinner("Lade Kartendaten..."):
+    st.subheader("Area of interest")
+    with st.spinner("Loading map data..."):
         rivers    = load_rivers(aoi["key"])
         glaciers  = load_glaciers(tuple(aoi["clip_box"]))
         reservoir = load_reservoir(aoi["key"])
@@ -850,29 +850,29 @@ with map_col:
 
     caps = []
     if catchment is not None:
-        caps.append("Einzugsgebiet (HydroBASINS)")
+        caps.append("Catchment (HydroBASINS)")
     if glaciers is not None:
         # Count only glaciers inside the basin, matching the catchment-clipped map.
         if catchment is not None and not catchment.empty:
             n_glac = int(glaciers.geometry.intersects(catchment.geometry.union_all()).sum())
         else:
             n_glac = len(glaciers)
-        caps.append(f"{n_glac} RGI v7 Gletscherpolygone")
+        caps.append(f"{n_glac} RGI v7 glacier polygons")
     else:
-        caps.append("RGI-Gletscherdaten nicht gefunden")
+        caps.append("RGI glacier data not found")
     if reservoir is not None:
         res_area = reservoir.iloc[0].get("area_km2")
-        caps.append(f"Stausee-Footprint (S1){f': {res_area:.2f} km²' if res_area is not None else ''}")
+        caps.append(f"Reservoir footprint (S1){f': {res_area:.2f} km²' if res_area is not None else ''}")
     else:
-        caps.append("Stausee-Footprint nicht gefunden - derive_reservoir.py ausfuehren")
+        caps.append("Reservoir footprint not found, run derive_reservoir.py")
     st.caption(" · ".join(caps))
 
     m = build_map(aoi, rivers, glaciers, reservoir, catchment)
     st_folium(m, height=430, use_container_width=True)
 
 with chart_col:
-    st.subheader("Zeitreihen")
-    tab1, tab2 = st.tabs(["Wasserflaeche", "Schnee & Eis"])
+    st.subheader("Time series")
+    tab1, tab2 = st.tabs(["Water area", "Snow & ice"])
 
     with tab1:
         st.plotly_chart(chart_water(df_s1), width="stretch")
@@ -882,30 +882,30 @@ with chart_col:
 
 # ── Scene browser (pre-rendered raster overlays) ─────────
 st.divider()
-st.subheader("Szenen im Zeitverlauf")
+st.subheader("Scenes over time")
 
 sensor_label = st.radio(
-    "Datensatz", list(OVERLAY_SENSORS.keys()), horizontal=True,
-    help="S1 (Radar, wolkenunabhaengig) zeigt Wasser; HLS (optisch) zeigt Schnee/Eis.",
+    "Dataset", list(OVERLAY_SENSORS.keys()), horizontal=True,
+    help="S1 (radar, cloud independent) shows water; HLS (optical) shows snow and ice.",
 )
 sensor = OVERLAY_SENSORS[sensor_label]
 ov = load_overlay_index(aoi["key"], sensor)
 
 if ov is None:
     st.info(
-        "Fuer dieses Gebiet/Sensor sind noch keine Szenen gerendert. "
-        "`python render_overlays.py` ausfuehren (liest die GeoTIFFs aus Drive und "
-        "legt eingefaerbte PNGs in static_data/overlays/ ab)."
+        "No scenes have been rendered for this area and sensor yet. "
+        "Run `python render_overlays.py` (it reads the GeoTIFFs from Drive and "
+        "writes coloured PNGs into static_data/overlays/)."
     )
 else:
     dates = ov["dates"]
     chosen = st.select_slider(
-        "Datum", options=dates, value=dates[-1],
+        "Date", options=dates, value=dates[-1],
         format_func=lambda d: f"{d[6:8]}.{d[4:6]}.{d[0:4]}",
     )
     uri = load_overlay_uri(aoi["key"], sensor, chosen)
     if uri is None:
-        st.warning("Szene nicht lesbar.")
+        st.warning("Scene not readable.")
     else:
         # Clip the glacier outlines to the catchment so they end exactly at the
         # basin boundary - matching the catchment-masked raster and the
@@ -923,13 +923,13 @@ else:
     render_overlay_legend(sensor)
 
 # ── Data tables (collapsible) ─────────────────
-with st.expander("Rohdaten anzeigen"):
-    st.caption("Wasser (DSWx-S1)")
+with st.expander("Show raw data"):
+    st.caption("Water (DSWx-S1)")
     st.dataframe(
         df_s1.sort_values("date", ascending=False).reset_index(drop=True),
         width="stretch", hide_index=True,
     )
-    st.caption("Schnee / Gletscher (DSWx-HLS)")
+    st.caption("Snow / glaciers (DSWx-HLS)")
     # Drop the optical HLS water column: it massively over-detects water
     # (terrain shadow / ice misclassified); the water signal comes from S1.
     df_hls_view = df.drop(columns=["water_area_km2"], errors="ignore")

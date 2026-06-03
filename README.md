@@ -101,7 +101,7 @@ Before download, the union of the tile footprints per date is checked against th
 
 | Filter | Threshold | Rationale |
 |--------|-----------|-----------|
-| Catchment coverage (HLS) | at least 85% valid pixels | Catchment relative. 85 (not 95), because the eastern Enguri tip often lies at the Sentinel-2 or Landsat swath edge (about 12% NoData even when all tiles are present). Lower barely helps, since the remaining partial dates are usually also cloudy. The real limiter is cloud (about 70 to 75% of dates). |
+| Catchment coverage (HLS) | at least 85% valid pixels | Catchment relative. The eastern Enguri tip often lies at the Sentinel-2 or Landsat swath edge, so some valid scenes carry partial NoData even when all tiles are present. The real limiter is cloud (about 70 to 75% of dates). |
 | Cloud cover (HLS) | at most 30% cloud in the catchment | Common threshold for optical remote sensing; cloud equals WTR flag 253. |
 | Catchment coverage (S1) | at least 90% | Removes partial orbits; only full area scenes enter the series. |
 | Reservoir coverage (S1) | at least 95% of the footprint | Otherwise `reservoir_area_km2` and `water_km2` are NaN (no false drawdown from NoData over the lake). |
