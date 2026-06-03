@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - HydroLAKES Reservoir Polygons
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Downloads HydroLAKES v1.0 (global lake/reservoir polygons, HydroSHEDS family)
 and extracts the exact polygon of each study reservoir (Enguri, Zhinvali).
@@ -39,12 +39,9 @@ LAKES_SHP_GLOB = "HydroLAKES_polys_v10.shp"
 
 OUTPUT_GEOJSON = STATIC_DIR / "reservoirs_hydrolakes.geojson"
 
-# AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat).
-# The dam point selects the correct reservoir polygon (the lake at the dam).
-AOIS = {
-    "enguri":   {"bbox": (41.70, 42.55, 42.80, 43.15), "dam": (42.032, 42.753)},
-    "zhinvali": {"bbox": (44.30, 42.00, 45.15, 42.80), "dam": (44.771, 42.133)},
-}
+# AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat) come from
+# aoi_config.py. The dam point selects the correct reservoir polygon (lake at dam).
+from aoi_config import AOIS
 
 
 # ─────────────────────────────────────────────

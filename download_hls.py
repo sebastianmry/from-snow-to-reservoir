@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - Download OPERA DSWx-HLS to Google Drive
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Optical water + snow/ice product (Landsat-8/9 + Sentinel-2).
 Downloads B01_WTR only; cloud masking uses the WTR layer's own 253 flag,

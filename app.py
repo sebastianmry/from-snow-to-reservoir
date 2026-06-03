@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - Streamlit Dashboard
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Stage 3 of the pipeline: interactive visualization of HLS timeseries data.
 
@@ -18,43 +18,44 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from shapely.geometry import shape
 from streamlit_folium import st_folium
+
+# Main inflow river per AOI (HydroRIVERS has no names; curated). The label is
+# placed automatically on the actual main stem, see river_label_point().
+MAIN_RIVER = {"enguri": "Enguri", "zhinvali": "Aragvi"}
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-STATIC_DIR = Path("static_data")
+from aoi_config import AOIS as _AOI_CONFIG, STATIC_DIR
 
+# Dashboard view, keyed by display label, built from the central AOI config.
 AOIS = {
-    "Enguri (West-Georgien)": {
-        "key": "enguri",
-        "clip_box": (41.70, 42.55, 42.80, 43.15),
-        "center": (42.884, 42.753),
-        "dam": (42.032, 42.753),
-        "dam_label": "Enguri-Staudamm (271 m)",
-        "zoom": 9,
-    },
-    "Zhinvali (Ost-Georgien)": {
-        "key": "zhinvali",
-        "clip_box": (44.30, 42.00, 45.15, 42.80),
-        "center": (44.725, 42.40),
-        "dam": (44.771, 42.133),
-        "dam_label": "Zhinvali-Staudamm",
-        "zoom": 9,
-    },
+    cfg["display_label"]: {
+        "key": cfg["name"],
+        "clip_box": cfg["clip_box"],
+        "center": cfg["center"],
+        "dam": cfg["dam"],
+        "dam_label": cfg["dam_label"],
+        "zoom": cfg["zoom"],
+    }
+    for cfg in _AOI_CONFIG.values()
 }
 
 SNOW_COLORS = {
-    "seasonal_snow_km2":   "#a8d8ea",
-    "snow_on_glacier_km2": "#4a90d9",
-    "bare_ice_km2":        "#1a3a5c",
+    "seasonal_snow_km2":     "#a8d8ea",
+    "seasonal_snow_km2_est": "#a8d8ea",
+    "snow_on_glacier_km2":   "#4a90d9",
+    "bare_ice_km2":          "#1a3a5c",
 }
 
 SNOW_LABELS = {
-    "seasonal_snow_km2":   "Saisonaler Schnee",
-    "snow_on_glacier_km2": "Schnee auf Gletscher",
-    "bare_ice_km2":        "Blankes Gletschereis",
+    "seasonal_snow_km2":     "Saisonaler Schnee",
+    "seasonal_snow_km2_est": "Saisonaler Schnee (coverage-korrigiert)",
+    "snow_on_glacier_km2":   "Schnee auf Gletscher",
+    "bare_ice_km2":          "Blankes Gletschereis",
 }
 
 
@@ -206,7 +207,39 @@ def load_glaciers(clip_box: tuple) -> gpd.GeoDataFrame | None:
         gdf = gpd.read_file(candidates[0], bbox=(min_lon, min_lat, max_lon, max_lat))
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs("EPSG:4326")
-        return gdf if not gdf.empty else None
+        if gdf.empty:
+            return None
+        # Clean the name column: keep only real names; blank out empty values and
+        # catalogue IDs (e.g. "198b", "193a") - a real name has a run of >=3
+        # letters, an ID does not. Unicode-aware so Cyrillic names are kept.
+        if "glac_name" in gdf.columns:
+            import re
+            def _clean_name(v):
+                s = "" if v is None else str(v).strip()
+                if s.lower() in ("", "nan", "none"):
+                    return ""
+                return s if re.search(r"[^\W\d_]{3,}", s) else ""
+            gdf["glac_name"] = gdf["glac_name"].map(_clean_name)
+        return gdf
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def load_catchment(aoi_key: str) -> gpd.GeoDataFrame | None:
+    """HydroBASINS drainage-basin polygon for the AOI (download_catchments.py).
+    The analysis is masked to this basin, so it doubles as the true AOI contour."""
+    path = STATIC_DIR / "catchments.geojson"
+    if not path.exists():
+        return None
+    try:
+        gdf = gpd.read_file(path)
+        gdf = gdf[gdf["aoi"] == aoi_key]
+        if gdf.empty:
+            return None
+        if gdf.crs and gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        return gdf
     except Exception:
         return None
 
@@ -233,8 +266,73 @@ def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
 # MAP
 # ─────────────────────────────────────────────
 
+def _river_weight(ord_flow) -> float:
+    """Line width from flow order (lower order = larger river = thicker).
+    Gradation keeps big rivers prominent and small brooks (order 7-8) thin."""
+    try:
+        o = int(ord_flow)
+    except (TypeError, ValueError):
+        o = 6
+    return min(4.0, max(0.6, (9 - o) * 0.7))
+
+
+def _chaikin(coords: list, iters: int = 2) -> list:
+    """Chaikin corner-cutting: smooths a polyline for display only."""
+    for _ in range(iters):
+        if len(coords) < 3:
+            break
+        new = [coords[0]]
+        for i in range(len(coords) - 1):
+            p, q = coords[i], coords[i + 1]
+            new.append([0.75 * p[0] + 0.25 * q[0], 0.75 * p[1] + 0.25 * q[1]])
+            new.append([0.25 * p[0] + 0.75 * q[0], 0.25 * p[1] + 0.75 * q[1]])
+        new.append(coords[-1])
+        coords = new
+    return coords
+
+
+def smooth_river_features(features: list[dict]) -> list[dict]:
+    """Return copies of river features with Chaikin-smoothed geometry. This only
+    changes how the lines are drawn; the underlying HydroRIVERS topology and flow
+    order (used for the catchment filter and line width) are untouched."""
+    out = []
+    for f in features:
+        geom = f["geometry"]
+        gtype = geom["type"]
+        if gtype == "LineString":
+            new_geom = {"type": "LineString", "coordinates": _chaikin(geom["coordinates"])}
+        elif gtype == "MultiLineString":
+            new_geom = {"type": "MultiLineString",
+                        "coordinates": [_chaikin(line) for line in geom["coordinates"]]}
+        else:
+            new_geom = geom
+        out.append({"type": "Feature", "properties": f["properties"], "geometry": new_geom})
+    return out
+
+
+def river_label_point(features: list[dict]) -> tuple[float, float] | None:
+    """A point on the main stem (longest line of the lowest flow order) to
+    anchor the river-name label, so the name always sits on the actual river."""
+    if not features:
+        return None
+    orders = [f["properties"].get("ORD_FLOW", 9) for f in features]
+    min_ord = min(orders)
+    best, best_len = None, -1.0
+    for f in features:
+        if f["properties"].get("ORD_FLOW", 9) != min_ord:
+            continue
+        g = shape(f["geometry"])
+        if g.length > best_len:
+            best, best_len = g, g.length
+    if best is None:
+        return None
+    pt = best.interpolate(0.5, normalized=True)
+    return (pt.y, pt.x)
+
+
 def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None,
-              reservoir: gpd.GeoDataFrame | None = None) -> folium.Map:
+              reservoir: gpd.GeoDataFrame | None = None,
+              catchment: gpd.GeoDataFrame | None = None) -> folium.Map:
     min_lon, min_lat, max_lon, max_lat = aoi["clip_box"]
     center_lat = (min_lat + max_lat) / 2
     center_lon = (min_lon + max_lon) / 2
@@ -246,42 +344,92 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # Fit exactly to the AOI so it is always centered regardless of AOI size
     m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
-    # AOI bounding box
-    folium.Rectangle(
-        bounds=[[min_lat, min_lon], [max_lat, max_lon]],
-        color="#e67e22",
-        weight=2,
-        fill=True,
-        fill_opacity=0.04,
-        tooltip="Untersuchungsgebiet (AOI)",
-    ).add_to(m)
+    # Reservoir centre for placing the name label (the river runs through it).
+    res_label_anchor = None
+    if reservoir is not None and not reservoir.empty:
+        c = reservoir.geometry.union_all().centroid
+        res_label_anchor = (c.y, c.x)
 
-    # Glacier polygons
-    if glaciers is not None:
+    # AOI = the drainage basin above the dam (HydroBASINS catchment). Draw its
+    # contour; the dashed bbox is only a fallback when the catchment is missing.
+    if catchment is not None and not catchment.empty:
         folium.GeoJson(
-            glaciers.__geo_interface__,
-            name="RGI v7 Gletscher",
+            catchment.__geo_interface__,
+            name="Einzugsgebiet (Catchment)",
             style_function=lambda _: {
-                "fillColor": "#ffffff",
-                "color": "#a8d8ea",
-                "weight": 1,
-                "fillOpacity": 0.6,
+                "color": "#5d6d7e",
+                "weight": 2.0,
+                "fillColor": "#5d6d7e",
+                "fillOpacity": 0.04,
             },
-            tooltip=folium.GeoJsonTooltip(fields=["glac_name"] if "glac_name" in glaciers.columns else []),
+            tooltip="Einzugsgebiet oberhalb des Staudamms",
+        ).add_to(m)
+    else:
+        folium.Rectangle(
+            bounds=[[min_lat, min_lon], [max_lat, max_lon]],
+            color="#5d6d7e",
+            weight=1.5,
+            dash_array="6,6",
+            fill=False,
+            tooltip="Untersuchungsgebiet (AOI)",
         ).add_to(m)
 
-    # River lines - GeoJson handles both LineString and MultiLineString,
-    # and works for HydroRIVERS data as well as the simplified fallback
+    # Glacier polygons - cool light violet so they stay distinct from the blue
+    # water layers and the white basemap. Split into named/unnamed: only named
+    # glaciers get a tooltip, so hovering an unnamed one shows nothing.
+    if glaciers is not None:
+        glacier_style = lambda _: {
+            "fillColor": "#cfc6e8",
+            "color": "#7e6fb8",
+            "weight": 1.3,
+            "fillOpacity": 0.9,
+        }
+        has_name = "glac_name" in glaciers.columns
+        named = glaciers[glaciers["glac_name"] != ""] if has_name else glaciers
+        unnamed = glaciers[glaciers["glac_name"] == ""] if has_name else glaciers.iloc[0:0]
+
+        if not unnamed.empty:
+            folium.GeoJson(unnamed.__geo_interface__, name="RGI v7 Gletscher",
+                           style_function=glacier_style).add_to(m)
+        if not named.empty:
+            folium.GeoJson(
+                named.__geo_interface__,
+                name="RGI v7 Gletscher (benannt)",
+                style_function=glacier_style,
+                tooltip=folium.GeoJsonTooltip(fields=["glac_name"], labels=False),
+            ).add_to(m)
+
+    # River lines - GeoJson handles both LineString and MultiLineString.
+    # Width scales with flow order (larger rivers thicker, small tributaries thin).
     if rivers:
         folium.GeoJson(
-            {"type": "FeatureCollection", "features": rivers},
+            {"type": "FeatureCollection", "features": smooth_river_features(rivers)},
             name="Fluesse (HydroRIVERS)",
-            style_function=lambda _: {
+            style_function=lambda feat: {
                 "color": "#2980b9",
-                "weight": 2,
-                "opacity": 0.8,
+                "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
+                "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
             },
         ).add_to(m)
+
+        # River-name label - just above the reservoir centre (the river runs
+        # through it), falling back to the main-stem midpoint if no reservoir.
+        anchor = res_label_anchor if res_label_anchor else river_label_point(rivers)
+        name = MAIN_RIVER.get(aoi["key"])
+        if anchor and name:
+            folium.Marker(
+                location=list(anchor),
+                icon=folium.DivIcon(
+                    icon_size=(90, 18),
+                    icon_anchor=(45, 9),
+                    html=(
+                        '<div style="font-size:11px;font-weight:600;color:#1a5276;'
+                        'background:rgba(255,255,255,0.65);border-radius:3px;'
+                        'text-align:center;white-space:nowrap;font-style:italic;">'
+                        f'{name}</div>'
+                    ),
+                ),
+            ).add_to(m)
 
     # Reservoir footprint (S1-derived) - the actual lake polygon
     if reservoir is not None and not reservoir.empty:
@@ -299,13 +447,13 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             tooltip=tip,
         ).add_to(m)
 
-    # Dam marker
+    # Dam marker - blue water droplet at the actual dam location (southern outlet)
     dam_lon, dam_lat = aoi["dam"]
     folium.Marker(
         location=[dam_lat, dam_lon],
         popup=folium.Popup(aoi["dam_label"], max_width=200),
         tooltip=aoi["dam_label"],
-        icon=folium.Icon(color="red", icon="tint", prefix="fa"),
+        icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
     ).add_to(m)
 
     folium.LayerControl().add_to(m)
@@ -336,7 +484,10 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
         hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>AOI gesamt</extra>",
     ))
 
-    # Reservoir-only footprint - the headline signal
+    # Reservoir-only footprint - the headline signal, as a single clean line.
+    # Robustness lives in the data layer: the reservoir guard already sets dates
+    # where the lake is under-observed to NaN (connectgaps=False -> shown as a gap),
+    # so no false drawdowns reach the line and no extra smoothing trace is needed.
     if has_res:
         fig.add_trace(go.Scatter(
             x=df["date"],
@@ -345,6 +496,7 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
             name="Stausee-Flaeche (Footprint)",
             line=dict(color="#1a5276", width=2.5),
             marker=dict(size=4),
+            connectgaps=False,
             hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Stausee</extra>",
         ))
 
@@ -366,7 +518,11 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
 def chart_snow(df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
-    snow_cols = ["seasonal_snow_km2", "snow_on_glacier_km2", "bare_ice_km2"]
+    # Prefer the coverage/cloud-corrected seasonal snow when available, so partial
+    # (swath-edge) dates are not biased low against full-coverage dates.
+    seas_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in df.columns
+                else "seasonal_snow_km2")
+    snow_cols = [seas_col, "snow_on_glacier_km2", "bare_ice_km2"]
 
     # Cloud gap shading (same logic, based on first snow column)
     gap_mask = df[snow_cols[0]].isna()
@@ -422,7 +578,7 @@ st.set_page_config(
 )
 
 st.title("From Snow to Reservoir")
-st.caption("Live-Monitoring von Schneeschmelze, Gletschern und Talsperren im Kaukasus (Georgien)")
+st.caption("Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus")
 
 # ── Sidebar ──────────────────────────────────
 with st.sidebar:
@@ -431,7 +587,10 @@ with st.sidebar:
     aoi = AOIS[aoi_label]
 
     st.divider()
-    st.caption("Automatisierte Geodatenprozessierung SoSe26\nSebastian Macherey")
+    st.caption(
+        "© Sebastian Macherey · "
+        "[GitHub](https://github.com/sebastianmry/from-snow-to-reservoir)"
+    )
 
 # ── Load data ────────────────────────────────
 # Snow / glacier come from HLS (optical), water comes from S1 (radar).
@@ -471,22 +630,29 @@ latest_w   = df_s1.iloc[-1] if not df_s1.empty else None
 max_water  = df_s1["water_km2"].max() if not df_s1.empty else None
 
 latest_h    = df.iloc[-1] if not df.empty else None
-max_snow    = (df["seasonal_snow_km2"] + df["snow_on_glacier_km2"]).max() if not df.empty else None
+# Use the coverage-corrected seasonal snow when present (comparable across dates).
+_seas_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in df.columns
+             else "seasonal_snow_km2")
+max_snow    = (df[_seas_col] + df["snow_on_glacier_km2"]).max() if not df.empty else None
 latest_snow = (
-    latest_h["seasonal_snow_km2"] + latest_h["snow_on_glacier_km2"]
+    latest_h[_seas_col] + latest_h["snow_on_glacier_km2"]
     if latest_h is not None else None
 )
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    has_res = (latest_w is not None and "reservoir_area_km2" in df_s1.columns
-               and pd.notna(latest_w.get("reservoir_area_km2")))
+    res_series = (df_s1["reservoir_area_km2"] if "reservoir_area_km2" in df_s1.columns
+                  else pd.Series(dtype=float))
+    has_res = res_series.notna().any()
     if has_res:
-        max_res = df_s1["reservoir_area_km2"].max()
+        # Current = last date with a valid lake reading; max over valid dates.
+        # (False-drawdown dates are already NaN via the reservoir guard.)
+        max_res    = res_series.max()
+        latest_res = res_series.dropna().iloc[-1]
         st.metric(
             "Stausee-Flaeche (S1, aktuell)",
-            f"{latest_w['reservoir_area_km2']:.2f} km²",
+            f"{latest_res:.2f} km²",
             delta=f"Max: {max_res:.2f} km²",
             delta_color="off",
         )
@@ -536,8 +702,11 @@ with map_col:
         rivers    = load_rivers(aoi["key"])
         glaciers  = load_glaciers(tuple(aoi["clip_box"]))
         reservoir = load_reservoir(aoi["key"])
+        catchment = load_catchment(aoi["key"])
 
     caps = []
+    if catchment is not None:
+        caps.append("Einzugsgebiet (HydroBASINS)")
     if glaciers is not None:
         caps.append(f"{len(glaciers)} RGI v7 Gletscherpolygone")
     else:
@@ -549,7 +718,7 @@ with map_col:
         caps.append("Stausee-Footprint nicht gefunden - derive_reservoir.py ausfuehren")
     st.caption(" · ".join(caps))
 
-    m = build_map(aoi, rivers, glaciers, reservoir)
+    m = build_map(aoi, rivers, glaciers, reservoir, catchment)
     st_folium(m, height=430, use_container_width=True)
 
 with chart_col:
@@ -557,20 +726,23 @@ with chart_col:
     tab1, tab2 = st.tabs(["Wasserflaeche", "Schnee & Eis"])
 
     with tab1:
-        st.plotly_chart(chart_water(df_s1), use_container_width=True)
+        st.plotly_chart(chart_water(df_s1), width="stretch")
 
     with tab2:
-        st.plotly_chart(chart_snow(df), use_container_width=True)
+        st.plotly_chart(chart_snow(df), width="stretch")
 
 # ── Data tables (collapsible) ─────────────────
 with st.expander("Rohdaten anzeigen"):
     st.caption("Wasser (DSWx-S1)")
     st.dataframe(
         df_s1.sort_values("date", ascending=False).reset_index(drop=True),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
     st.caption("Schnee / Gletscher (DSWx-HLS)")
+    # Drop the optical HLS water column: it massively over-detects water
+    # (terrain shadow / ice misclassified); the water signal comes from S1.
+    df_hls_view = df.drop(columns=["water_area_km2"], errors="ignore")
     st.dataframe(
-        df.sort_values("date", ascending=False).reset_index(drop=True),
-        use_container_width=True, hide_index=True,
+        df_hls_view.sort_values("date", ascending=False).reset_index(drop=True),
+        width="stretch", hide_index=True,
     )

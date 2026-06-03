@@ -1,17 +1,28 @@
-# Project Context: FROM SNOW TO RESERVOIR (Live-Monitoring Georgien)
+# Project Context: FROM SNOW TO RESERVOIR
+Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus
 
 ## 1. Projektziel & Geographie
 Hydrologisches Monitoring von zwei Schlüssel-Regionen im Großen Kaukasus (Georgien) zur Analyse der Verbindung von Schneeschmelze, Gletscherrückgang und Talsperren-Wasserständen.
 
+AOI = Einzugsgebiet oberhalb des Damms (HydroBASINS lev12, siehe download_catchments.py).
+Zentrale Definition in `aoi_config.py` (Single Source of Truth, alle Skripte importieren daraus).
+
 ### AOI 1: Enguri (West-Georgien / Svaneti)
-- Bounding Box (clip_box): (41.70, 42.55, 42.80, 43.15) [Format: min_lon, min_lat, max_lon, max_lat]
-- Reservoir Center Point: (42.032, 42.753)
-- Fokus: Riesiges Wassereinzugsgebiet, starke Vergletscherung rund um Mestia.
+- clip_box (= Catchment-bbox + 0.02° Puffer): (41.8467, 42.7294, 43.1658, 43.2783)
+- Catchment-Fläche: ~3 139 km² (HydroBASINS lev12, konvergiert ab lev09)
+- Dam / Pour-Point: (42.032, 42.753); s1_anchor 20240829 (Phase 6, 50 Szenen). Per Coverage war
+  zunaechst Phase 7 (20240830) gewaehlt, aber der Reservoir-Praezisions-Check (--compare-orbit)
+  zeigte Phase 7 unter-detektiert den See im Herbst (~6.5 vs stabile ~7.3 bei Phase 6 & 0) ->
+  auf den stabileren Phase-6-Orbit gewechselt. Coverage != Mess-Qualitaet fuers Reservoir.
+- Fokus: starke Vergletscherung Svaneti; neue Box reicht bis ~43.17 E (östliche Quellflüsse
+  Ushguli, die die alte Box bei maxx=42.80 abschnitt).
 
 ### AOI 2: Zhinvali (Ost-Georgien / Kazbegi)
-- Bounding Box (clip_box): (44.30, 42.00, 45.15, 42.80)
-- Reservoir Center Point: (44.771, 42.133)
-- Fokus: Beinhaltet den Gergeti-Gletscher am Mount Kazbek im Norden und die Stufe zum Zhinvali-Stausee im Süden.
+- clip_box (= Catchment-bbox + 0.02° Puffer): (44.3133, 42.0008, 45.245, 42.6283)
+- Catchment-Fläche: ~2 089 km² (HydroBASINS lev12, konvergiert ab lev10)
+- Dam / Pour-Point: (44.771, 42.133); s1_anchor 20240825 (Phase 1, 53 Szenen; stabil ggü. alt)
+- Fokus: Aragvi-Becken bis ~42.61 N. Kazbek/Gergeti-Gletscher liegen AUSSERHALB (entwässern
+  in den Terek/Norden) — hydrologisch korrekt ausgeschlossen.
 
 ---
 
@@ -97,7 +108,7 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
 
 ---
 
-## 3. Aktueller Bearbeitungsstand (Stand: 2026-06-01)
+## 3. Aktueller Bearbeitungsstand (Stand: 2026-06-02)
 
 - **Stufe 1 fertig:** HLS + S1 Download Enguri + Zhinvali komplett im Drive (MGRS-getaggt).
 - **Stufe 2 fertig:** HLS- UND S1-Zeitreihen berechnet. Coverage-Bug (Mosaik-Clip) gefixt,
@@ -113,7 +124,113 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (`derive_reservoir.py`) + `reservoir_area_km2` in den S1-Parquets, Orbit fest verankert.
   Details siehe Abschnitt "Reservoir-Polygone + Fuellwerte" unten.
 
-### GEPLANT (naechster Schritt): Raster-Overlay (TIFs) im Dashboard mit Zeit-Durchschau
+### Catchment-AOI: CODE FERTIG (2026-06-02), Re-Download durch User ausstehend
+Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
+- **Schritt 0 (fertig):** `aoi_config.py` als Single Source of Truth (clip_box, dam, s1_anchor,
+  Display-Felder). download_common / extract_timeseries / derive_reservoir / download_rivers /
+  download_reservoirs / app.py importieren daraus. Verhaltensneutral verifiziert (alte Werte).
+- **Schritt 1 (fertig):** `download_catchments.py` (HydroBASINS lev01-12 EU, ~361 MB einmalig).
+  Pour-Point=Damm, Upstream-BFS (HYBAS_ID/NEXT_DOWN) -> dissolve -> catchments.geojson.
+  Levels 7-12 verglichen: feine Level leaken NICHT stromabwärts (Level 7 tat das). Flächen
+  konvergieren Enguri ab lev09 (3139 km²), Zhinvali ab lev10 (2089 km²). lev12 gewählt.
+  Validiert: Reservoirs+Dämme innen, Kazbek (44.52/42.70) AUSSERHALB Zhinvali, Reservoir-Bounds
+  passen in neue clip_box. Neue clip_box-Werte in aoi_config.py eingetragen.
+- **Schritt 2 (Vektor fertig):** download_rivers.py (477 Segmente) + download_reservoirs.py
+  (Seeds enguri 4.85 / zhinvali 5.65 km²) auf neue Box neu geclippt. glaciers braucht kein Re-Run.
+- **Schritt 3 (fertig, zweistufig):** `probe_coverage.py`. Stufe A (gratis): Footprint-Coverage
+  je Datum + 12-Tage-Phasen -> Kandidaten-Phasen (filtert kurze S1C-Spuren raus). Stufe B
+  (`--sample N`): laedt N Testdateien je Kandidaten-Phase, mosaikiert + clippt + catchment-maskiert
+  mit DERSELBEN Maschinerie wie der echte Lauf (extract_timeseries.mosaic_tiles/extract_s1_stats)
+  und misst die ECHTE valid_px_pct -> objektiv bester Orbit. Grund: Footprint-Coverage trennt die
+  vollen Orbits kaum (alle ~99%), aber die Pixel-Coverage kann je auf-/absteigend wegen SAR-
+  Layover/Shadow abweichen. ERGEBNIS --sample 3 (echte valid_px_pct, catchment-relativ):
+  * enguri: Footprint-Wahl war Phase 0 (20240823), ABER deren Startdatum nur 59.5% valid ->
+    Phase 7 (20240830) gewinnt (mean 99.4%, min 99.4%, 51 Tage). Anchor auf 20240830 geaendert.
+  * zhinvali: Phase 1 (20240825) bleibt (99.9%, 53 Tage). WICHTIG: Phase 7 dort nur ~7% valid
+    (Footprint sagte >=99%!) - ohne Stufe B waere das ein Desaster gewesen.
+  * Lehre: Orbit-Geometrie ist PRO AOI verschieden (Phase 7 = best bei enguri, worst bei
+    zhinvali) -> Orbit muss pro AOI an echten Pixeln gewaehlt werden, nicht per Footprint.
+- **Orbit-Filter im DOWNLOAD (neu):** download_s1.py hat `"orbit_filter": True`; download_common
+  filtert nach dem Footprint-Vorfilter zusaetzlich auf die s1_anchor-Phase (orbit_phase()==0) ->
+  laedt NUR den einen Orbit (~1/4 der Tage). Verifiziert im Lauf: Enguri 51/182, Zhinvali 53/183
+  Tage. HLS NICHT gefiltert (braucht alle klaren Tage). Vorher zog der Download alle Orbits.
+- **Download-Haertung (download_common.download_and_clip):** umgestellt von fsspec auf eine
+  authentifizierte requests-Session (earthaccess.get_requests_https_session) mit HARTEM Read-
+  Timeout HTTP_TIMEOUT=(15,180)s -> kein endloses Haengen mehr bei toten Sockets (fsspec hatte
+  kein Read-Timeout, der Lauf blieb bei PODAAC-Problemen stehen). MAX_RETRIES=5, Backoff
+  2/4/8/16/32s, RETRYABLE_STATUS={429,500,502,503,504}. probe_coverage.py Stufe B nutzt dieselbe
+  requests-Session. Erfahrung Re-Download: PODAAC wirft sporadisch 5xx (transient -> Resume-Lauf
+  holt sie nach) + vereinzelt 404 (zurueckgezogene/reprozessierte Granules -> bleiben weg, ok).
+  Resume-sicher: download_*.py erneut starten ueberspringt vorhandene Drive-Dateien.
+- **Datenstand Re-Download (laufend):** S1 fertig (Enguri 204 Dateien/51 Tage, Zhinvali 272/53,
+  0 Fehler). HLS laeuft (Enguri 1053/1059, 6 uebrig: 5x 502 transient + 1x 404). Danach
+  Resume-Lauf fuer die 502er, dann derive_reservoir + extract_timeseries --refresh.
+- **Schritt 6 (fertig):** Catchment-Polygon-Maske in extract_timeseries.py (`load_catchment` +
+  `_catchment_mask`, reuse rasterize_glaciers). WICHTIG: valid_px_pct/cloud sind jetzt
+  CATCHMENT-relativ (Nenner = Catchment-Pixel, sonst würde die große Box alles unter die
+  90/95%-Schwelle drücken). Backward-kompatibel (ohne catchments.geojson exakt altes Verhalten).
+  app.py: Catchment-Kontur statt bbox auf der Karte. AppTest beide AOIs 0 Exceptions.
+- **Schritte 4/5 (AUSSTEHEND, User fährt selbst):** (a) Drive `OPERA_DSWx/{hls,s1}/{enguri,
+  zhinvali}/` manuell leeren (alte Clips passen nicht zur neuen Box; KEIN Lösch-Skript im Repo),
+  (b) download_s1.py + download_hls.py (neue MGRS-Kacheln), (c) derive_reservoir.py +
+  extract_timeseries.py --refresh. Mehrstündig. Danach: reservoir_area_km2 + Schnee/Gletscher
+  neu, Doku-Zahlen finalisieren (README markiert die alten 9,86/11,19 km² als "neu zu berechnen").
+- DEM-Delineation war Fallback, NICHT nötig (HydroBASINS lev12 ausreichend).
+
+### Wissenschaftliche Optimierungen (2026-06-02, GELAUFEN + verifiziert)
+- **Orbit objektiv gewählt:** probe_coverage.py um Stufe B (`--sample N`) erweitert -> lädt N
+  Testdateien je Kandidaten-Phase, misst ECHTE valid_px_pct (gleiche Maschinerie wie der Lauf).
+  Ergebnis kippte die Footprint-Wahl: enguri Phase 0 (20240823) hatte am Startdatum nur 59.5%
+  valid -> stattdessen Phase 7 (20240830, mean 99.4%). zhinvali blieb 20240825. WICHTIG: zhinvali
+  Phase 7 hatte real nur ~7% valid (Footprint log ≥99%) - ohne Stufe B ein Desaster. Lehre:
+  Orbit pro AOI an echten Pixeln wählen. Final-Reihe: enguri 51, zhinvali 52 Szenen.
+- **HLS MIN_VALID_PCT 95 -> 85** (catchment-relativ). Diagnose: Enguri hat einen ~88%-Cluster
+  (östl. Svaneti-Zipfel am S2/Landsat-Swath-Rand, alle Kacheln da = Aufnahmegeometrie, kein Gap).
+  EHRLICH: brachte 24 -> 47 Tage (NICHT die anfangs geschätzten ~124 - die meisten 85-89%-Tage
+  sind ZUSÄTZLICH bewölkt, Code prüft coverage vor cloud, sie wandern nur in den cloud-Bucket).
+  Echter Limiter ist die Bewölkung: Enguri 210/300, zhinvali 187/249 Tage >30% Wolken. Tiefer als
+  85 bringt ~nichts. zhinvali kein Cluster (cloud-limitiert), bleibt 49 HLS-Tage.
+- **Schnee-Normalisierung:** neue Spalten seasonal_snow_frac (= Schnee / beobachtete Nicht-
+  Gletscher-Beckenfläche) + seasonal_snow_km2_est (= frac × volle Beckenfläche) + obs_land_pct.
+  Entzerrt coverage-/wolkenbedingte Teiltage (füllt Unbeobachtetes mit beobachteter Schneerate).
+  Effekt moderat (~5-8%), weil ok-Tage eh 92-95% beobachtet sind = wenig Bias. App + KPI nutzen est.
+- **Reservoir-Guard + water-Guard:** reservoir_valid_pct = valide Pixel IM See-Footprint; < 95% ->
+  reservoir_area_km2 UND water_km2 = NaN (See ist Hauptwasserkörper, Wasser nicht normalisierbar).
+  Fängt NoData-über-See als Scheinabsenkung. Verifiziert: enguri 2025-04-27 reservoir_valid_pct
+  45.2% -> beide NaN (war also NoData-Loch, kein Wind). Genau 1 NaN-Tag je AOI.
+- **App:** Reservoir-Linie wieder EINE Linie (User fand Tropfen+Median unruhig; der Daten-Guard
+  liefert die Robustheit, NaN-Tage = Lücke). Schnee-Chart/KPI nutzen seasonal_snow_km2_est.
+- **`--recompute` Flag (extract_timeseries):** liest nur ergebnisrelevante Tage neu (ok + unter
+  AKTUELLEN Schwellen neu qualifizierende), übernimmt cloud-/unter-Schwelle-Skips MIT Stats aus
+  dem Cache ohne Drive-Read. Nach Logik-/Schwellen-Änderung viel schneller (zhinvali 50 statt 249).
+  prepare_cache() + _needs_recompute(). NICHT --refresh nutzen, wenn nur Logik sich ändert!
+- **Download-Robustheit:** requests-Session statt fsspec, HTTP_TIMEOUT (10,60)s gegen Hänger,
+  MAX_RETRIES 3, Retry für 429/5xx. PODAAC warf während des Re-Downloads viele transiente 502 +
+  vereinzelt 404 (zurückgezogene Granules). Resume-Lauf holt 502er nach; 404 bleiben weg.
+- **HLS-Coverage S2 vs Landsat (belegt, --compare-orbit-Logik / Sensor-Auswertung):** Die
+  fluktuierende HLS-Coverage ist sensorbedingt. Sentinel-2 (Swath 290 km) deckt das langgestreckte
+  Enguri-Becken voll ab (jeder S2-Tag ≥85%), Landsat (185 km) nur teils. Median je Sensor: S2A 100,
+  S2C 99.7, S2B 88, L8 73.5, L9 74.3. Der 85%-Filter behält faktisch die S2-Tage. Jüngere Monate
+  schlechter = mehr Landsat-/S2C-Einzelpassagen. Dokumentierte optische Datengrenze, kein Bug.
+- **Zweit-Orbit-/Präzisions-Check (probe_coverage --compare-orbit, NEU):** misst reservoir_area_km2
+  von Stichprobentagen eines Nachbar-Orbits gegen die bestehende Reihe (nächster Tag). 1-Tag-
+  Nachbarorbit = reines Geometrie-Rauschen -> Fehlerschranke ~±0.2 km² (zhinvali), ~±0.4 km²
+  (enguri, bis 0.68 bei 1 Tag). 6-Tage-Orbit (Densification): Enguri Phase 0 vs 7 hatte +0.26
+  Bias (Sägezahn) -> NICHT kombiniert. Zhinvali nicht verdichtbar (6-Tage-Orbit = die 7%-Phase).
+  ERGEBNIS: Phase 7 (enguri) dippt im Herbst (~6.5), Phase 6 & 0 stabil ~7.3 -> Phase 7 = Artefakt.
+- **Enguri-Anchor 20240830 -> 20240829 (Phase 6) gewechselt + S1 neu gerechnet:** Reservoir jetzt
+  stabil ~6.9-7.6 km² (Spanne ~0.78), Herbst-Dip weg. Signal/Rausch: Zhinvali ~12:1 (echtes Signal,
+  Hub ~2.4 km²), Enguri ~2:1 (nahe Rauschgrenze -> Fläche ist schwacher Proxy, empirisch bestätigt).
+- **Reservoir-Flächen final (Catchment-AOI):** Footprint Enguri 9.32 km², Zhinvali 11.20 km².
+  Zhinvali-Reservoir klarer Jahresgang ~8.5 (Frühjahr) -> ~11 (Herbst); Enguri flach ~7.0-7.6.
+- Stand Daten: S1 komplett (enguri Phase 6 50 Tage, zhinvali 52). HLS Enguri 47 / zhinvali 49 Tage
+  (Bewölkung limitiert; 502-Lücken nachgeholt, brachten 0 neue Tage = waren cloudy/partiell).
+  Parquets neu, App verifiziert (0 Exceptions).
+
+### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
+- User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen
+  (Schnee/Eis/Wasser-Farben) - und zwar fuer BEIDE Sensoren: S1 (Wasser) UND HLS
+  (Schnee/Eis), nicht nur S1.
 - Karte soll die eigentlichen GeoTIFFs anzeigen und gestylt darstellen, sodass man per Datums-Slider durch die Szenen blaettern und die Veraenderungen ueber die Zeit sehen kann (Schnee/Eis/Wasser im Jahresverlauf).
 - ANGEREICHERTE Version: `B01_WTR` (Mosaik) pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
   Wasser (1-5) = blau, saisonaler Schnee = weiss, Schnee-auf-Gletscher = hellblau, blankes Gletschereis = tuerkis/grau.
@@ -158,8 +275,8 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (8,42-10,91 km², klarer Jahresgang Absenkung Winter/Fruehjahr -> Auffuellung ab Mai),
   Enguri 4,6x ruhiger. WICHTIG: Enguri-Reservoirflaeche aendert sich kaum (~1 km² Spanne),
   weil Jvari ein tiefer Schluchtspeicher ist (steile Waende: grosser Pegelhub, kleine
-  Flaechenaenderung). -> Bei Enguri ist Flaeche ein schwacher Pegel-Proxy, der DEM-/
-  Uferlinien-Schritt (INFLOS) wird dort entscheidend; Zhinvali erzaehlt schon ueber Flaeche.
+  Flaechenaenderung). -> Bei Enguri ist die Flaeche ein schwacher Speicher-Proxy; ein absoluter
+  Pegel waere noetig, ist aber mangels Bathymetrie nicht ableitbar (siehe Abschnitt unten).
 - **Orbit-Verankerung (neu in extract_timeseries.py):** Pro AOI `s1_anchor` (ein Datum des
   gewuenschten Orbits). Die S1-Sektion behaelt NUR Tage dieser 12-Tage-Phase (orbit_phase()),
   laedt also nur diesen einen Orbit (~1/4 der Tage hier) statt alle. Anker = die bisher
@@ -172,13 +289,26 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   Headless mit streamlit AppTest geprueft (beide AOIs, 0 Exceptions). Bekannt/offen: das ganze
   Dashboard nutzt noch `use_container_width` (deprecated, nur Warnung) - spaeter modernisieren.
 
-### Danach: Wasserpegel aus Flaeche + DEM (INFLOS-Ansatz statt Hypsometrie)
-- Statt hypsometrischer Flaeche->Pegel-Kurve den Pegel DIREKT messen (INFLOS, Poterek 2025,
-  Remote Sens. 17(2):329): an der Uferlinie ist die Wassertiefe ~0, also = DEM-Hoehe. Pro Datum
-  die S1-Uferlinie des Reservoirs mit Copernicus DEM GLO-30 verschneiden, Ufer-Hoehen sampeln,
-  |z|>1-Ausreisserfilter (INFLOS-Default 1.0) + Median -> absoluter Pegel (m ue. NN). Einfacher
-  als INFLOS, weil ein See eine flache Ebene ist. Zufluss-Stuetzpunkte via georgia_rivers.geojson
-  ausschliessen. Ergibt durchgehende Pegelzeitreihe (urspruengliche Projektidee).
+### Wasserpegel (DEM/INFLOS) - GETESTET und VERWORFEN (2026-06-01)
+Der INFLOS-Pegelansatz (S1-Uferlinie x Copernicus DEM GLO-30) wurde implementiert,
+getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
+- **Grund:** Das Copernicus DEM (TanDEM-X 2011-2015) hat beide Stauseen ALS Wasser
+  aufgenommen und die Oberflaeche eingeebnet -> **keine Bathymetrie**. Belegt mit DEM-Werten
+  im Footprint: Zhinvali komplett flach 805,5 m (p5=p95=805,5; std 1,7) -> Pegel konstant
+  805,5 fuer JEDES Datum (degeneriert). Enguri Boden bei 425 m + echte Schluchtwaende darueber
+  -> nur 425-440 m, Tiefststaende zensiert. Das ist INFLOS-Annahme D (Bathymetrie nicht
+  ableitbar); INFLOS ist fuer Ueberflutungen auf trockenem Gelaende, nicht fuer aufgestaute Seen.
+- **Altimetrie geprueft (Alternative fuer echten Pegel):** ICESat-2 ATL13 via earthaccess -
+  die bbox-Suche matcht nur die grobe Orbit-Ausdehnung; die gesampelten Paesse kreuzen die AOI
+  gar nicht (0 Punkte in der Region). Kleine Bergstauseen werden von ICESat-2/Jason/Sentinel-3
+  kaum getroffen. Verworfen (echtes Track-Subsetting via icepyx waere noetig, unsicherer Ertrag).
+- **Entfernt:** download_dem.py geloescht; shoreline_level/load_dem/dem_has_relief und
+  reservoir_level_m aus extract_timeseries.py; Pegel-Tab aus app.py. `reservoir_area_km2`
+  bleibt der Speicher-Indikator. Re-Lauf `extract_timeseries.py --skip-hls` (gecacht, schnell)
+  regeneriert die Parquets ohne die Pegel-Spalte.
+- **Fazit fuer Bericht:** Speicher wird ueber die S1-FLAECHE ueberwacht. Absoluter Pegel ist mit
+  frei verfuegbaren DEMs nicht ableitbar (keine Bathymetrie); Altimetrie deckt diese kleinen
+  Bergstauseen nicht ab. Das ist eine dokumentierte Datengrenze, kein Methodenfehler.
 
 ### ERLEDIGT: S1 (SAR) reaktiviert
 - `download_s1.py` laedt alle MGRS-Kacheln (volle AOI), `extract_timeseries.py` mosaikiert

@@ -1,6 +1,6 @@
 """
 FROM SNOW TO RESERVOIR - HydroRIVERS Download & Clip
-Automatisierte Geodatenprozessierung SoSe26 | Sebastian Macherey
+Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Downloads HydroRIVERS v10 (Europe and Middle East) from HydroSHEDS,
 clips it to the two AOI bounding boxes, and saves a compact GeoJSON
@@ -37,17 +37,18 @@ RIVERS_SHP_GLOB = "HydroRIVERS_v10_eu.shp"
 
 OUTPUT_GEOJSON = STATIC_DIR / "georgia_rivers.geojson"
 
-# AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat).
-# The dam point defines the catchment outlet: only rivers UPSTREAM of it
-# (i.e. that feed the reservoir) are kept.
-AOIS = {
-    "enguri":   {"bbox": (41.70, 42.55, 42.80, 43.15), "dam": (42.032, 42.753)},
-    "zhinvali": {"bbox": (44.30, 42.00, 45.15, 42.80), "dam": (44.771, 42.133)},
-}
+# AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat) come from
+# aoi_config.py. The dam point defines the catchment outlet: only rivers UPSTREAM
+# of it (i.e. that feed the reservoir) are kept.
+from aoi_config import AOIS
 
-# Only keep major rivers: ORD_FLOW is the logarithmic flow-order class.
-# Lower value = larger river. Keep classes <= this threshold to avoid clutter.
-MAX_FLOW_ORDER = 6
+# ORD_FLOW is the logarithmic flow-order class (lower value = larger river).
+# Keep classes <= this threshold. 8 includes the small glacial-fed brooks
+# (drawn thin in the dashboard, see _river_weight); only the very smallest
+# headwater trickles (9+) are dropped. The upstream-of-dam filter already
+# restricts to the reservoir catchment, i.e. segments at or above reservoir
+# elevation.
+MAX_FLOW_ORDER = 8
 
 
 # ─────────────────────────────────────────────
@@ -111,9 +112,13 @@ def upstream_of_dam(gdf: gpd.GeoDataFrame, dam_lon: float, dam_lat: float) -> gp
         print("  (no flow topology fields - skipping upstream filter)")
         return gdf
 
-    # Segment nearest the dam = catchment outlet
+    # Segment nearest the dam = catchment outlet. Compute the distance on a
+    # projected CRS (UTM 38N) - distance() on a geographic CRS warns and is
+    # inaccurate. The index maps back to the original (4326) gdf.
     dam = Point(dam_lon, dam_lat)
-    outlet_id = gdf.loc[gdf.geometry.distance(dam).idxmin(), "HYRIV_ID"]
+    gdf_utm = gdf.to_crs("EPSG:32638")
+    dam_utm = gpd.GeoSeries([dam], crs="EPSG:4326").to_crs("EPSG:32638").iloc[0]
+    outlet_id = gdf.loc[gdf_utm.geometry.distance(dam_utm).idxmin(), "HYRIV_ID"]
 
     # Reverse adjacency: which segments flow INTO each segment
     flows_into = defaultdict(list)
