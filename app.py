@@ -21,9 +21,12 @@ import streamlit as st
 from shapely.geometry import shape
 from streamlit_folium import st_folium
 
-# Main inflow river per AOI (HydroRIVERS has no names; curated). The label is
-# placed automatically on the actual main stem, see river_label_point().
+# Main inflow river per AOI (HydroRIVERS has no names; curated). Shown as a
+# tooltip on the main stem; the Aragvi feeds the Zhinvali reservoir, so river and
+# reservoir names differ.
 MAIN_RIVER = {"enguri": "Enguri", "zhinvali": "Aragvi"}
+# Reservoir name per AOI - the persistent on-map label sits on the lake itself.
+RESERVOIR_NAME = {"enguri": "Enguri", "zhinvali": "Zhinvali"}
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
@@ -263,6 +266,44 @@ def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
 
 
 # ─────────────────────────────────────────────
+# RASTER OVERLAYS (pre-rendered PNGs, see render_overlays.py)
+# ─────────────────────────────────────────────
+
+OVERLAY_DIR = STATIC_DIR / "overlays"
+# Display label -> sensor subfolder
+OVERLAY_SENSORS = {"Wasser (S1)": "s1", "Schnee & Eis (HLS)": "hls"}
+
+
+@st.cache_data(show_spinner=False)
+def load_overlay_index(aoi_key: str, sensor: str) -> dict | None:
+    """Available pre-rendered scenes for one AOI+sensor: the date list and the
+    shared geographic bounds. Returns None if render_overlays.py has not run."""
+    d = OVERLAY_DIR / aoi_key / sensor
+    bounds_f = d / "bounds.json"
+    if not d.exists() or not bounds_f.exists():
+        return None
+    try:
+        bounds = json.loads(bounds_f.read_text())["bounds"]
+    except Exception:
+        return None
+    dates = sorted(p.stem for p in d.glob("*.png"))
+    if not dates:
+        return None
+    return {"bounds": bounds, "dates": dates}
+
+
+@st.cache_data(show_spinner=False)
+def load_overlay_uri(aoi_key: str, sensor: str, date_str: str) -> str | None:
+    """Read one overlay PNG as a base64 data URI (so it embeds straight into the
+    folium map without needing a served file)."""
+    png = OVERLAY_DIR / aoi_key / sensor / f"{date_str}.png"
+    if not png.exists():
+        return None
+    import base64
+    return "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode()
+
+
+# ─────────────────────────────────────────────
 # MAP
 # ─────────────────────────────────────────────
 
@@ -344,7 +385,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # Fit exactly to the AOI so it is always centered regardless of AOI size
     m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
-    # Reservoir centre for placing the name label (the river runs through it).
+    # Reservoir centre for placing the reservoir-name label on the lake itself.
     res_label_anchor = None
     if reservoir is not None and not reservoir.empty:
         c = reservoir.geometry.union_all().centroid
@@ -384,38 +425,63 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             "weight": 1.3,
             "fillOpacity": 0.9,
         }
+        # Clip to the catchment: glaciers outside the basin don't drain into this
+        # reservoir and aren't in the statistics, so showing them only confuses.
+        if catchment is not None and not catchment.empty:
+            glaciers = gpd.clip(glaciers, catchment)
         has_name = "glac_name" in glaciers.columns
         named = glaciers[glaciers["glac_name"] != ""] if has_name else glaciers
         unnamed = glaciers[glaciers["glac_name"] == ""] if has_name else glaciers.iloc[0:0]
 
+        # Single legend entry, but keep named/unnamed as separate GeoJson so only
+        # named glaciers carry a tooltip. Both go into one FeatureGroup -> one toggle.
+        glacier_group = folium.FeatureGroup(name="RGI v7 Gletscher")
         if not unnamed.empty:
-            folium.GeoJson(unnamed.__geo_interface__, name="RGI v7 Gletscher",
-                           style_function=glacier_style).add_to(m)
+            folium.GeoJson(unnamed.__geo_interface__,
+                           style_function=glacier_style).add_to(glacier_group)
         if not named.empty:
             folium.GeoJson(
                 named.__geo_interface__,
-                name="RGI v7 Gletscher (benannt)",
                 style_function=glacier_style,
                 tooltip=folium.GeoJsonTooltip(fields=["glac_name"], labels=False),
-            ).add_to(m)
+            ).add_to(glacier_group)
+        glacier_group.add_to(m)
 
     # River lines - GeoJson handles both LineString and MultiLineString.
     # Width scales with flow order (larger rivers thicker, small tributaries thin).
+    # Like the glaciers: one legend entry, but split so only the main stem (low
+    # flow order = big rivers) carries the river-name tooltip on hover; small
+    # tributaries stay un-labelled.
     if rivers:
-        folium.GeoJson(
-            {"type": "FeatureCollection", "features": smooth_river_features(rivers)},
-            name="Fluesse (HydroRIVERS)",
-            style_function=lambda feat: {
-                "color": "#2980b9",
-                "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
-                "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
-            },
-        ).add_to(m)
+        river_style = lambda feat: {
+            "color": "#2980b9",
+            "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
+            "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
+        }
+        smoothed = smooth_river_features(rivers)
+        MAIN_ORD = 5  # ORD_FLOW <= 5 = the large main-stem rivers
+        main_feats = [f for f in smoothed if f["properties"].get("ORD_FLOW", 9) <= MAIN_ORD]
+        trib_feats = [f for f in smoothed if f["properties"].get("ORD_FLOW", 9) > MAIN_ORD]
+        river_name = MAIN_RIVER.get(aoi["key"])
 
-        # River-name label - just above the reservoir centre (the river runs
-        # through it), falling back to the main-stem midpoint if no reservoir.
+        river_group = folium.FeatureGroup(name="Fluesse (HydroRIVERS)")
+        if trib_feats:
+            folium.GeoJson(
+                {"type": "FeatureCollection", "features": trib_feats},
+                style_function=river_style,
+            ).add_to(river_group)
+        if main_feats:
+            folium.GeoJson(
+                {"type": "FeatureCollection", "features": main_feats},
+                style_function=river_style,
+                tooltip=river_name if river_name else None,
+            ).add_to(river_group)
+        river_group.add_to(m)
+
+        # Persistent reservoir-name label on the lake itself (e.g. Zhinvali-
+        # Stausee), falling back to the main-stem midpoint if no reservoir polygon.
         anchor = res_label_anchor if res_label_anchor else river_label_point(rivers)
-        name = MAIN_RIVER.get(aoi["key"])
+        name = RESERVOIR_NAME.get(aoi["key"])
         if anchor and name:
             folium.Marker(
                 location=list(anchor),
@@ -431,7 +497,9 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                 ),
             ).add_to(m)
 
-    # Reservoir footprint (S1-derived) - the actual lake polygon
+    # Reservoir footprint (S1-derived) - the actual lake polygon. The headline
+    # feature, so make it pop: vivid blue fill + crisp dark outline on top of the
+    # paler river/water layers.
     if reservoir is not None and not reservoir.empty:
         area = reservoir.iloc[0].get("area_km2")
         tip = f"Stausee-Footprint (S1)" + (f": {area:.2f} km²" if area is not None else "")
@@ -439,25 +507,101 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             reservoir.__geo_interface__,
             name="Stausee-Footprint (S1)",
             style_function=lambda _: {
-                "fillColor": "#2980b9",
-                "color": "#1a5276",
-                "weight": 1.5,
-                "fillOpacity": 0.55,
+                "fillColor": "#1f6fc0",
+                "color": "#0b3d66",
+                "weight": 2.5,
+                "fillOpacity": 0.78,
             },
+            highlight_function=lambda _: {"weight": 3.5, "fillOpacity": 0.9},
             tooltip=tip,
         ).add_to(m)
 
-    # Dam marker - blue water droplet at the actual dam location (southern outlet)
-    dam_lon, dam_lat = aoi["dam"]
-    folium.Marker(
-        location=[dam_lat, dam_lon],
-        popup=folium.Popup(aoi["dam_label"], max_width=200),
-        tooltip=aoi["dam_label"],
-        icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
-    ).add_to(m)
-
     folium.LayerControl().add_to(m)
     return m
+
+
+def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
+                      catchment: gpd.GeoDataFrame | None,
+                      reservoir: gpd.GeoDataFrame | None,
+                      glaciers: gpd.GeoDataFrame | None = None) -> folium.Map:
+    """Light-weight map for the scene browser: basemap, catchment contour, the
+    chosen pre-rendered raster, and (for HLS) the RGI glacier outlines so glaciers
+    are always clearly bounded - whether currently snow-covered or bare ice."""
+    m = folium.Map(tiles="CartoDB positron")
+    m.fit_bounds(bounds)
+
+    if catchment is not None and not catchment.empty:
+        folium.GeoJson(
+            catchment.__geo_interface__,
+            style_function=lambda _: {
+                "color": "#5d6d7e", "weight": 2.0, "fill": False,
+            },
+        ).add_to(m)
+
+    folium.raster_layers.ImageOverlay(
+        image=png_uri, bounds=bounds, opacity=0.9, zindex=10,
+    ).add_to(m)
+
+    # RGI glacier outlines (violet, no fill) so the glacier extent reads clearly
+    # against the cyan snow field / over the bare-ice raster.
+    if glaciers is not None and not glaciers.empty:
+        folium.GeoJson(
+            glaciers.__geo_interface__,
+            style_function=lambda _: {
+                "color": "#5e4b8b", "weight": 1.0, "fill": False, "opacity": 0.9,
+            },
+        ).add_to(m)
+
+    # Thin reservoir outline on top, for orientation against the water raster.
+    if reservoir is not None and not reservoir.empty:
+        folium.GeoJson(
+            reservoir.__geo_interface__,
+            style_function=lambda _: {
+                "color": "#0b3d66", "weight": 1.5, "fill": False,
+            },
+        ).add_to(m)
+    return m
+
+
+# Overlay legend swatches - colours match the rendered PNG classes (render_overlays.py).
+_OVERLAY_LEGEND = {
+    "s1": [("#1f6fc0", "Wasser")],
+    "hls": [
+        ("#5ac8e6", "Saisonaler Schnee"),
+        ("#8e7cc3", "Schnee auf Gletscher"),
+        ("#5e4b8b", "Blankes Gletschereis"),
+        ("#1f6fc0", "Wasser"),
+    ],
+}
+
+
+def render_overlay_legend(sensor: str):
+    """Compact colour-swatch legend under the scene-browser map."""
+    items = _OVERLAY_LEGEND.get(sensor, [])
+    chips = "".join(
+        f'<span style="display:inline-flex;align-items:center;margin-right:16px;'
+        f'white-space:nowrap;">'
+        f'<span style="width:14px;height:14px;border-radius:3px;background:{color};'
+        f'border:1px solid rgba(0,0,0,0.25);margin-right:6px;"></span>{label}</span>'
+        for color, label in items
+    )
+    if sensor == "hls":
+        chips += (
+            '<span style="display:inline-flex;align-items:center;white-space:nowrap;">'
+            '<span style="width:14px;height:0;border-top:2px solid #5e4b8b;'
+            'margin-right:6px;"></span>Gletschergrenze (RGI)</span>'
+        )
+    st.markdown(
+        f'<div style="display:flex;flex-wrap:wrap;gap:6px 0;font-size:0.85rem;'
+        f'margin-top:4px;">{chips}</div>',
+        unsafe_allow_html=True,
+    )
+    if sensor == "s1":
+        st.caption(
+            "DSWx-S1 (Radar, wolkenunabhaengig, 30-m-Raster). SAR erfasst vor allem "
+            "offene Wasserflaechen wie den Stausee; schmale Gebirgsfluesse fallen meist "
+            "unter die Pixelgroesse und werden kaum erkannt."
+        )
 
 
 # ─────────────────────────────────────────────
@@ -708,7 +852,12 @@ with map_col:
     if catchment is not None:
         caps.append("Einzugsgebiet (HydroBASINS)")
     if glaciers is not None:
-        caps.append(f"{len(glaciers)} RGI v7 Gletscherpolygone")
+        # Count only glaciers inside the basin, matching the catchment-clipped map.
+        if catchment is not None and not catchment.empty:
+            n_glac = int(glaciers.geometry.intersects(catchment.geometry.union_all()).sum())
+        else:
+            n_glac = len(glaciers)
+        caps.append(f"{n_glac} RGI v7 Gletscherpolygone")
     else:
         caps.append("RGI-Gletscherdaten nicht gefunden")
     if reservoir is not None:
@@ -730,6 +879,48 @@ with chart_col:
 
     with tab2:
         st.plotly_chart(chart_snow(df), width="stretch")
+
+# ── Scene browser (pre-rendered raster overlays) ─────────
+st.divider()
+st.subheader("Szenen im Zeitverlauf")
+
+sensor_label = st.radio(
+    "Datensatz", list(OVERLAY_SENSORS.keys()), horizontal=True,
+    help="S1 (Radar, wolkenunabhaengig) zeigt Wasser; HLS (optisch) zeigt Schnee/Eis.",
+)
+sensor = OVERLAY_SENSORS[sensor_label]
+ov = load_overlay_index(aoi["key"], sensor)
+
+if ov is None:
+    st.info(
+        "Fuer dieses Gebiet/Sensor sind noch keine Szenen gerendert. "
+        "`python render_overlays.py` ausfuehren (liest die GeoTIFFs aus Drive und "
+        "legt eingefaerbte PNGs in static_data/overlays/ ab)."
+    )
+else:
+    dates = ov["dates"]
+    chosen = st.select_slider(
+        "Datum", options=dates, value=dates[-1],
+        format_func=lambda d: f"{d[6:8]}.{d[4:6]}.{d[0:4]}",
+    )
+    uri = load_overlay_uri(aoi["key"], sensor, chosen)
+    if uri is None:
+        st.warning("Szene nicht lesbar.")
+    else:
+        # Clip the glacier outlines to the catchment so they end exactly at the
+        # basin boundary - matching the catchment-masked raster and the
+        # catchment-relative statistics (glaciers outside don't feed this reservoir).
+        glac_arg = None
+        if sensor == "hls" and glaciers is not None:
+            glac_arg = (gpd.clip(glaciers, catchment)
+                        if catchment is not None and not catchment.empty
+                        else glaciers)
+        ov_map = build_overlay_map(
+            aoi, uri, ov["bounds"], catchment, reservoir, glaciers=glac_arg,
+        )
+        st_folium(ov_map, height=430, use_container_width=True,
+                  key=f"overlay_{aoi['key']}_{sensor}")
+    render_overlay_legend(sensor)
 
 # ── Data tables (collapsible) ─────────────────
 with st.expander("Rohdaten anzeigen"):
