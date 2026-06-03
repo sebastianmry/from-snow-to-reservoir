@@ -23,9 +23,10 @@ jobs:
     timeout-minutes: 120
     env:
       # Headless storage: no Google Drive, tiles live in a temp dir outside the
-      # repo so they are never committed (see storage.py LocalStore).
+      # repo so they are never committed (see storage.py LocalStore). The actual
+      # path is set in "Configure tile store" below ($RUNNER_TEMP is not available
+      # in this job-level env block, only inside steps).
       PIPELINE_STORE: local
-      PIPELINE_LOCAL_DIR: ${{ runner.temp }}/opera_tiles
 
     steps:
       - name: Checkout
@@ -39,6 +40,9 @@ jobs:
 
       - name: Install pipeline dependencies
         run: pip install -r requirements-pipeline.txt
+
+      - name: Configure tile store path
+        run: echo "PIPELINE_LOCAL_DIR=$RUNNER_TEMP/opera_tiles" >> "$GITHUB_ENV"
 
       # Earthdata login for earthaccess (the only credential the CI needs).
       - name: Write Earthdata .netrc
