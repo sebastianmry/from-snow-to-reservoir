@@ -26,7 +26,7 @@ from streamlit_folium import st_folium
 # reservoir names differ.
 MAIN_RIVER = {"enguri": "Enguri", "zhinvali": "Aragvi"}
 # Reservoir name per AOI - the persistent on-map label sits on the lake itself.
-RESERVOIR_NAME = {"enguri": "Enguri-Stausee", "zhinvali": "Zhinvali-Stausee"}
+RESERVOIR_NAME = {"enguri": "Enguri", "zhinvali": "Zhinvali"}
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
