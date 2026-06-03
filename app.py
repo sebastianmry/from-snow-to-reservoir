@@ -21,9 +21,12 @@ import streamlit as st
 from shapely.geometry import shape
 from streamlit_folium import st_folium
 
-# Main inflow river per AOI (HydroRIVERS has no names; curated). The label is
-# placed automatically on the actual main stem, see river_label_point().
+# Main inflow river per AOI (HydroRIVERS has no names; curated). Shown as a
+# tooltip on the main stem; the Aragvi feeds the Zhinvali reservoir, so river and
+# reservoir names differ.
 MAIN_RIVER = {"enguri": "Enguri", "zhinvali": "Aragvi"}
+# Reservoir name per AOI - the persistent on-map label sits on the lake itself.
+RESERVOIR_NAME = {"enguri": "Enguri-Stausee", "zhinvali": "Zhinvali-Stausee"}
 
 # ─────────────────────────────────────────────
 # CONFIGURATION
@@ -344,7 +347,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # Fit exactly to the AOI so it is always centered regardless of AOI size
     m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
-    # Reservoir centre for placing the name label (the river runs through it).
+    # Reservoir centre for placing the reservoir-name label on the lake itself.
     res_label_anchor = None
     if reservoir is not None and not reservoir.empty:
         c = reservoir.geometry.union_all().centroid
@@ -388,34 +391,55 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
         named = glaciers[glaciers["glac_name"] != ""] if has_name else glaciers
         unnamed = glaciers[glaciers["glac_name"] == ""] if has_name else glaciers.iloc[0:0]
 
+        # Single legend entry, but keep named/unnamed as separate GeoJson so only
+        # named glaciers carry a tooltip. Both go into one FeatureGroup -> one toggle.
+        glacier_group = folium.FeatureGroup(name="RGI v7 Gletscher")
         if not unnamed.empty:
-            folium.GeoJson(unnamed.__geo_interface__, name="RGI v7 Gletscher",
-                           style_function=glacier_style).add_to(m)
+            folium.GeoJson(unnamed.__geo_interface__,
+                           style_function=glacier_style).add_to(glacier_group)
         if not named.empty:
             folium.GeoJson(
                 named.__geo_interface__,
-                name="RGI v7 Gletscher (benannt)",
                 style_function=glacier_style,
                 tooltip=folium.GeoJsonTooltip(fields=["glac_name"], labels=False),
-            ).add_to(m)
+            ).add_to(glacier_group)
+        glacier_group.add_to(m)
 
     # River lines - GeoJson handles both LineString and MultiLineString.
     # Width scales with flow order (larger rivers thicker, small tributaries thin).
+    # Like the glaciers: one legend entry, but split so only the main stem (low
+    # flow order = big rivers) carries the river-name tooltip on hover; small
+    # tributaries stay un-labelled.
     if rivers:
-        folium.GeoJson(
-            {"type": "FeatureCollection", "features": smooth_river_features(rivers)},
-            name="Fluesse (HydroRIVERS)",
-            style_function=lambda feat: {
-                "color": "#2980b9",
-                "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
-                "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
-            },
-        ).add_to(m)
+        river_style = lambda feat: {
+            "color": "#2980b9",
+            "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
+            "opacity": 0.85 if feat["properties"].get("ORD_FLOW", 6) <= 6 else 0.55,
+        }
+        smoothed = smooth_river_features(rivers)
+        MAIN_ORD = 5  # ORD_FLOW <= 5 = the large main-stem rivers
+        main_feats = [f for f in smoothed if f["properties"].get("ORD_FLOW", 9) <= MAIN_ORD]
+        trib_feats = [f for f in smoothed if f["properties"].get("ORD_FLOW", 9) > MAIN_ORD]
+        river_name = MAIN_RIVER.get(aoi["key"])
 
-        # River-name label - just above the reservoir centre (the river runs
-        # through it), falling back to the main-stem midpoint if no reservoir.
+        river_group = folium.FeatureGroup(name="Fluesse (HydroRIVERS)")
+        if trib_feats:
+            folium.GeoJson(
+                {"type": "FeatureCollection", "features": trib_feats},
+                style_function=river_style,
+            ).add_to(river_group)
+        if main_feats:
+            folium.GeoJson(
+                {"type": "FeatureCollection", "features": main_feats},
+                style_function=river_style,
+                tooltip=river_name if river_name else None,
+            ).add_to(river_group)
+        river_group.add_to(m)
+
+        # Persistent reservoir-name label on the lake itself (e.g. Zhinvali-
+        # Stausee), falling back to the main-stem midpoint if no reservoir polygon.
         anchor = res_label_anchor if res_label_anchor else river_label_point(rivers)
-        name = MAIN_RIVER.get(aoi["key"])
+        name = RESERVOIR_NAME.get(aoi["key"])
         if anchor and name:
             folium.Marker(
                 location=list(anchor),
@@ -431,7 +455,9 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                 ),
             ).add_to(m)
 
-    # Reservoir footprint (S1-derived) - the actual lake polygon
+    # Reservoir footprint (S1-derived) - the actual lake polygon. The headline
+    # feature, so make it pop: vivid blue fill + crisp dark outline on top of the
+    # paler river/water layers.
     if reservoir is not None and not reservoir.empty:
         area = reservoir.iloc[0].get("area_km2")
         tip = f"Stausee-Footprint (S1)" + (f": {area:.2f} km²" if area is not None else "")
@@ -439,22 +465,14 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             reservoir.__geo_interface__,
             name="Stausee-Footprint (S1)",
             style_function=lambda _: {
-                "fillColor": "#2980b9",
-                "color": "#1a5276",
-                "weight": 1.5,
-                "fillOpacity": 0.55,
+                "fillColor": "#1f6fc0",
+                "color": "#0b3d66",
+                "weight": 2.5,
+                "fillOpacity": 0.78,
             },
+            highlight_function=lambda _: {"weight": 3.5, "fillOpacity": 0.9},
             tooltip=tip,
         ).add_to(m)
-
-    # Dam marker - blue water droplet at the actual dam location (southern outlet)
-    dam_lon, dam_lat = aoi["dam"]
-    folium.Marker(
-        location=[dam_lat, dam_lon],
-        popup=folium.Popup(aoi["dam_label"], max_width=200),
-        tooltip=aoi["dam_label"],
-        icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
-    ).add_to(m)
 
     folium.LayerControl().add_to(m)
     return m
