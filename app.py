@@ -484,28 +484,20 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
         hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>AOI gesamt</extra>",
     ))
 
-    # Reservoir-only footprint - the headline signal. Raw values are shown as
-    # faint dots; the bold line is a 3-point rolling median that suppresses single
-    # -date SAR artefacts (wind roughening the surface, swath-edge NoData) without
-    # deleting any data. NaN dates (lake under-observed, reservoir guard) are gaps.
+    # Reservoir-only footprint - the headline signal, as a single clean line.
+    # Robustness lives in the data layer: the reservoir guard already sets dates
+    # where the lake is under-observed to NaN (connectgaps=False -> shown as a gap),
+    # so no false drawdowns reach the line and no extra smoothing trace is needed.
     if has_res:
-        res_median = df["reservoir_area_km2"].rolling(3, center=True, min_periods=1).median()
         fig.add_trace(go.Scatter(
             x=df["date"],
             y=df["reservoir_area_km2"],
-            mode="markers",
-            name="Stausee-Flaeche (roh)",
-            marker=dict(size=4, color="#85c1e9"),
-            hovertemplate="%{x|%d.%m.%Y}<br>%{y:.2f} km²<extra>roh</extra>",
-        ))
-        fig.add_trace(go.Scatter(
-            x=df["date"],
-            y=res_median,
-            mode="lines",
-            name="Stausee-Flaeche (gleitender Median)",
+            mode="lines+markers",
+            name="Stausee-Flaeche (Footprint)",
             line=dict(color="#1a5276", width=2.5),
+            marker=dict(size=4),
             connectgaps=False,
-            hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Median</extra>",
+            hovertemplate="%{x|%d.%m.%Y}<br><b>%{y:.2f} km²</b><extra>Stausee</extra>",
         ))
 
     fig.update_layout(
@@ -654,14 +646,14 @@ with col1:
                   else pd.Series(dtype=float))
     has_res = res_series.notna().any()
     if has_res:
-        # Robust max from the rolling median, so a single SAR artefact spike does
-        # not define the headline. Current = last date with a valid lake reading.
-        max_res    = res_series.rolling(3, center=True, min_periods=1).median().max()
+        # Current = last date with a valid lake reading; max over valid dates.
+        # (False-drawdown dates are already NaN via the reservoir guard.)
+        max_res    = res_series.max()
         latest_res = res_series.dropna().iloc[-1]
         st.metric(
             "Stausee-Flaeche (S1, aktuell)",
             f"{latest_res:.2f} km²",
-            delta=f"Max (Median): {max_res:.2f} km²",
+            delta=f"Max: {max_res:.2f} km²",
             delta_color="off",
         )
     elif latest_w is not None:

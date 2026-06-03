@@ -40,10 +40,15 @@ AOIS = {
         # Replaces the old coarse box (41.70,42.55,42.80,43.15) which cut off the
         # eastern Svaneti headwaters (up to ~43.17 E).
         "clip_box": (41.8467, 42.7294, 43.1658, 43.2783),
-        # probe_coverage.py --sample 3: phase 7 has the cleanest real pixel coverage
-        # (mean 99.4%, min 99.4%, 51 dates). Footprint-only would have picked phase 0
-        # (20240823), but that orbit's start date is only 59.5% valid -> phase 7 wins.
-        "s1_anchor": "20240830",
+        # Orbit phase 6. probe_coverage --sample first picked phase 7 (20240830) on
+        # pure coverage (99.4%), but the second-orbit / 1-day-neighbour reservoir
+        # check (probe_coverage --compare-orbit) showed phase 7 systematically
+        # UNDER-reads the lake in autumn (~6.5 km2) while phases 6 (20240829) and 0
+        # (20240823) both read a stable ~7.3 km2 - i.e. phase 7's dip is a geometry
+        # artefact, not real (Enguri is a deep gorge, ~flat area). Phase 6 gives the
+        # cleaner/more stable reservoir series with full coverage. Coverage != lake
+        # measurement quality.
+        "s1_anchor": "20240829",
         "display_label": "Enguri (West-Georgien)",
         "center": (42.884, 42.753),
         "dam_label": "Enguri-Staudamm (271 m)",

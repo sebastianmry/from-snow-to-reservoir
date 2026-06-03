@@ -38,11 +38,13 @@ aoi_config.py, THEN run download_s1.py (which downloads only that one orbit).
 
 import argparse
 import sys
+import statistics
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import earthaccess
+import pandas as pd
 from shapely.geometry import box as shp_box
 from shapely.ops import unary_union
 
@@ -50,7 +52,9 @@ from download_common import (
     AOIS, DATE_START, DATE_END, FOOTPRINT_MIN_COVER,
     granule_date, granule_footprint, download_and_clip,
 )
-from extract_timeseries import mosaic_tiles, extract_s1_stats, load_catchment, NODATA
+from extract_timeseries import (
+    mosaic_tiles, extract_s1_stats, load_catchment, load_reservoir, NODATA,
+)
 
 S1_REPEAT_DAYS = 12
 
@@ -239,6 +243,92 @@ def probe_s1_sample(aoi: dict, by_date: dict, by_phase: dict,
 
 
 # ─────────────────────────────────────────────
+# SECOND-ORBIT CONSISTENCY CHECK
+# ─────────────────────────────────────────────
+# Cheap test of whether a SECOND ~99% orbit (different 12-day phase = different
+# acquisition days) could densify the S1 reservoir series from ~12 to ~6 days
+# WITHOUT introducing a look-geometry sawtooth. We sample a few dates of the
+# second orbit, compute reservoir_area_km2 (same code as the real run) and put
+# each next to the nearest date of the existing (anchor-orbit) series. If the
+# values interleave smoothly (small, unbiased diff) the orbits agree on the lake
+# and can be combined; a systematic offset means keep the single orbit.
+
+def compare_second_orbit(aoi: dict, orbit_date: str, n: int):
+    site = aoi["name"]
+    pq = Path(f"{site}_s1_timeseries.parquet")
+    if not pq.exists():
+        print(f"  no {pq} to compare against (run extract_timeseries.py first)")
+        return
+    df = pd.read_parquet(pq)
+    if "reservoir_area_km2" not in df.columns:
+        print("  existing series has no reservoir_area_km2"); return
+    df = df.dropna(subset=["reservoir_area_km2"]).copy()
+    df["d"] = pd.to_datetime(df["date"])
+    if df.empty:
+        print("  existing reservoir series is empty"); return
+
+    granules = earthaccess.search_data(
+        short_name=COLLECTIONS["s1"], bounding_box=aoi["bbox"],
+        temporal=(DATE_START, DATE_END), count=-1,
+    )
+    by_date = defaultdict(list)
+    for g in granules:
+        by_date[granule_date(g)].append(g)
+    cover = date_coverage(granules, aoi)
+    full = sorted(d for d, c in cover.items() if c >= FOOTPRINT_MIN_COVER)
+    o = _ordinal(orbit_date)
+    second = [d for d in full if (_ordinal(d) - o) % S1_REPEAT_DAYS == 0]
+    if not second:
+        print(f"  no full-coverage S1 dates on the orbit of {orbit_date}"); return
+    sample = pick_sample_dates(second, n)
+
+    fs = earthaccess.get_requests_https_session()
+    catchment = load_catchment(site)
+    reservoir = load_reservoir(site)
+    if reservoir is None:
+        print("  no reservoir polygon (run derive_reservoir.py first)"); return
+
+    print(f"  2nd orbit (anchor {orbit_date}): {len(second)} full-coverage dates, "
+          f"sampling {len(sample)}. Existing anchor series: {len(df)} reservoir dates.")
+    print(f"  {'2nd-orbit':>10} {'res_2nd':>8} {'valid%':>7} {'resvalid%':>9}   "
+          f"{'near-anchor':>11} {'res_anchor':>10} {'gap_d':>5} {'diff':>7}")
+    diffs = []
+    for d in sample:
+        links = wtr_links_for_date(by_date[d])
+        tiles = [b for b in (download_and_clip(fs, l, aoi["clip_box"]) for l in links)
+                 if b is not None]
+        if not tiles:
+            print(f"  {d:>10}  (no readable tiles)"); continue
+        mos = mosaic_tiles(tiles, NODATA, aoi["clip_box"])
+        if mos is None:
+            print(f"  {d:>10}  (mosaic failed)"); continue
+        st = extract_s1_stats(mos, reservoir, catchment)
+        rv, vp = st.get("reservoir_area_km2"), st.get("valid_px_pct")
+        rvp = st.get("reservoir_valid_pct", 100.0)
+        dd = pd.Timestamp(datetime.strptime(d, "%Y%m%d"))
+        near = df.loc[(df["d"] - dd).abs().idxmin()]
+        gap = abs((near["d"] - dd).days)
+        ra = near["reservoir_area_km2"]
+        ok = (rv == rv) and rvp >= 95.0   # rv==rv: not NaN (guard didn't fire)
+        diff_str = f"{rv - ra:+7.2f}" if ok else "    -  "
+        if ok:
+            diffs.append(rv - ra)
+        rv_str = f"{rv:8.2f}" if rv == rv else "     nan"
+        print(f"  {d:>10} {rv_str} {vp:6.1f}% {rvp:8.1f}%   "
+              f"{near['d'].strftime('%Y%m%d'):>11} {ra:10.2f} {gap:5d} {diff_str}")
+
+    if diffs:
+        md = statistics.mean(diffs)
+        amd = statistics.mean(abs(x) for x in diffs)
+        print(f"\n  -> mean diff {md:+.2f} km2, mean |diff| {amd:.2f} km2 "
+              f"over {len(diffs)} comparable dates")
+        print("     small & unbiased  -> orbits agree on the lake, combine for ~6-day density")
+        print("     systematic offset -> keep the single orbit (geometry sawtooth)")
+    else:
+        print("\n  no comparable dates (all guarded/partial)")
+
+
+# ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
 
@@ -249,11 +339,20 @@ def main():
     ap.add_argument("--sample", type=int, default=0, metavar="N",
                     help="stage B: download N test dates per candidate phase and "
                          "measure real valid_px_pct (default 0 = footprint only)")
+    ap.add_argument("--compare-orbit", metavar="YYYYMMDD", default=None,
+                    help="second-orbit check: sample dates of the orbit through this "
+                         "date and compare reservoir_area_km2 to the existing series "
+                         "(needs an AOI filter). Use --sample N for the count.")
     args = ap.parse_args()
 
     flt = [a.lower() for a in args.filters]
     want_aoi = next((a for a in flt if a in {x["name"] for x in AOIS}), None)
     want_sensor = next((a for a in flt if a in COLLECTIONS), None)
+
+    if args.compare_orbit and not want_aoi:
+        print("ERROR: --compare-orbit needs an AOI (the orbit date is AOI-specific), "
+              "e.g. 'python probe_coverage.py zhinvali --compare-orbit 20240831 --sample 8'")
+        return
 
     print("NASA Earthdata Login...")
     try:
@@ -266,6 +365,9 @@ def main():
         if want_aoi and aoi["name"] != want_aoi:
             continue
         print(f"\n{'='*70}\nAOI: {aoi['label']}  bbox={aoi['bbox']}\n{'='*70}")
+        if args.compare_orbit:
+            compare_second_orbit(aoi, args.compare_orbit, args.sample or 8)
+            continue
         if want_sensor in (None, "hls"):
             probe_hls(aoi)
         if want_sensor in (None, "s1"):

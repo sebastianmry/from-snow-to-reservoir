@@ -10,8 +10,10 @@ Zentrale Definition in `aoi_config.py` (Single Source of Truth, alle Skripte imp
 ### AOI 1: Enguri (West-Georgien / Svaneti)
 - clip_box (= Catchment-bbox + 0.02° Puffer): (41.8467, 42.7294, 43.1658, 43.2783)
 - Catchment-Fläche: ~3 139 km² (HydroBASINS lev12, konvergiert ab lev09)
-- Dam / Pour-Point: (42.032, 42.753); s1_anchor 20240830 (Phase 7, 51 Szenen, mean valid 99.4%
-  per Sample; Footprint-Wahl Phase 0 verworfen, deren Startdatum nur 59.5% valid)
+- Dam / Pour-Point: (42.032, 42.753); s1_anchor 20240829 (Phase 6, 50 Szenen). Per Coverage war
+  zunaechst Phase 7 (20240830) gewaehlt, aber der Reservoir-Praezisions-Check (--compare-orbit)
+  zeigte Phase 7 unter-detektiert den See im Herbst (~6.5 vs stabile ~7.3 bei Phase 6 & 0) ->
+  auf den stabileren Phase-6-Orbit gewechselt. Coverage != Mess-Qualitaet fuers Reservoir.
 - Fokus: starke Vergletscherung Svaneti; neue Box reicht bis ~43.17 E (östliche Quellflüsse
   Ushguli, die die alte Box bei maxx=42.80 abschnitt).
 
@@ -196,8 +198,8 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   reservoir_area_km2 UND water_km2 = NaN (See ist Hauptwasserkörper, Wasser nicht normalisierbar).
   Fängt NoData-über-See als Scheinabsenkung. Verifiziert: enguri 2025-04-27 reservoir_valid_pct
   45.2% -> beide NaN (war also NoData-Loch, kein Wind). Genau 1 NaN-Tag je AOI.
-- **App-Glättung:** Reservoir-Linie = gleitender 3-Punkt-Median (Rohpunkte blass sichtbar), KPI-Max
-  aus dem Median (robuster gegen SAR-Artefakte). Schnee-Chart/KPI nutzen seasonal_snow_km2_est.
+- **App:** Reservoir-Linie wieder EINE Linie (User fand Tropfen+Median unruhig; der Daten-Guard
+  liefert die Robustheit, NaN-Tage = Lücke). Schnee-Chart/KPI nutzen seasonal_snow_km2_est.
 - **`--recompute` Flag (extract_timeseries):** liest nur ergebnisrelevante Tage neu (ok + unter
   AKTUELLEN Schwellen neu qualifizierende), übernimmt cloud-/unter-Schwelle-Skips MIT Stats aus
   dem Cache ohne Drive-Read. Nach Logik-/Schwellen-Änderung viel schneller (zhinvali 50 statt 249).
@@ -205,11 +207,25 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
 - **Download-Robustheit:** requests-Session statt fsspec, HTTP_TIMEOUT (10,60)s gegen Hänger,
   MAX_RETRIES 3, Retry für 429/5xx. PODAAC warf während des Re-Downloads viele transiente 502 +
   vereinzelt 404 (zurückgezogene Granules). Resume-Lauf holt 502er nach; 404 bleiben weg.
-- **Reservoir-Flächen final (Catchment-AOI):** Enguri 9.32 km², Zhinvali 11.20 km² (≈ alt; Methode
-  stabil ggü. AOI-Wechsel). Zhinvali S1-Reservoir zeigt klaren Jahresgang ~8.5 (Frühjahr) -> ~11
-  (Herbst); Enguri flach ~6.5-7.9 (tiefer Schluchtspeicher).
-- Stand Daten: S1 komplett (enguri 204 Dateien/51 Tage, zhinvali 272/53). HLS ~99% (paar 502/404
-  offen, unkritisch, per Resume nachholbar). Parquets neu, App verifiziert (0 Exceptions).
+- **HLS-Coverage S2 vs Landsat (belegt, --compare-orbit-Logik / Sensor-Auswertung):** Die
+  fluktuierende HLS-Coverage ist sensorbedingt. Sentinel-2 (Swath 290 km) deckt das langgestreckte
+  Enguri-Becken voll ab (jeder S2-Tag ≥85%), Landsat (185 km) nur teils. Median je Sensor: S2A 100,
+  S2C 99.7, S2B 88, L8 73.5, L9 74.3. Der 85%-Filter behält faktisch die S2-Tage. Jüngere Monate
+  schlechter = mehr Landsat-/S2C-Einzelpassagen. Dokumentierte optische Datengrenze, kein Bug.
+- **Zweit-Orbit-/Präzisions-Check (probe_coverage --compare-orbit, NEU):** misst reservoir_area_km2
+  von Stichprobentagen eines Nachbar-Orbits gegen die bestehende Reihe (nächster Tag). 1-Tag-
+  Nachbarorbit = reines Geometrie-Rauschen -> Fehlerschranke ~±0.2 km² (zhinvali), ~±0.4 km²
+  (enguri, bis 0.68 bei 1 Tag). 6-Tage-Orbit (Densification): Enguri Phase 0 vs 7 hatte +0.26
+  Bias (Sägezahn) -> NICHT kombiniert. Zhinvali nicht verdichtbar (6-Tage-Orbit = die 7%-Phase).
+  ERGEBNIS: Phase 7 (enguri) dippt im Herbst (~6.5), Phase 6 & 0 stabil ~7.3 -> Phase 7 = Artefakt.
+- **Enguri-Anchor 20240830 -> 20240829 (Phase 6) gewechselt + S1 neu gerechnet:** Reservoir jetzt
+  stabil ~6.9-7.6 km² (Spanne ~0.78), Herbst-Dip weg. Signal/Rausch: Zhinvali ~12:1 (echtes Signal,
+  Hub ~2.4 km²), Enguri ~2:1 (nahe Rauschgrenze -> Fläche ist schwacher Proxy, empirisch bestätigt).
+- **Reservoir-Flächen final (Catchment-AOI):** Footprint Enguri 9.32 km², Zhinvali 11.20 km².
+  Zhinvali-Reservoir klarer Jahresgang ~8.5 (Frühjahr) -> ~11 (Herbst); Enguri flach ~7.0-7.6.
+- Stand Daten: S1 komplett (enguri Phase 6 50 Tage, zhinvali 52). HLS Enguri 47 / zhinvali 49 Tage
+  (Bewölkung limitiert; 502-Lücken nachgeholt, brachten 0 neue Tage = waren cloudy/partiell).
+  Parquets neu, App verifiziert (0 Exceptions).
 
 ### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
 - User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen
