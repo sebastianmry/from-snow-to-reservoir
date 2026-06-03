@@ -227,10 +227,26 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   (Bewölkung limitiert; 502-Lücken nachgeholt, brachten 0 neue Tage = waren cloudy/partiell).
   Parquets neu, App verifiziert (0 Exceptions).
 
-### GEPLANT (naechster Schritt, vom User bestaetigt 2026-06-01): Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau
-- User-Wunsch konkret: die TIFs als eingefaerbte PNGs in der App pro Datum zeigen
-  (Schnee/Eis/Wasser-Farben) - und zwar fuer BEIDE Sensoren: S1 (Wasser) UND HLS
-  (Schnee/Eis), nicht nur S1.
+### Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau - CODE FERTIG (2026-06-03), Render-Lauf durch User ausstehend
+- `render_overlays.py` umgesetzt: laeuft EINMAL nach extract_timeseries.py, liest pro
+  Sensor (s1/hls) die Datumsliste aus dem fertigen Parquet (Szenen = exakt die Charts),
+  laedt die Drive-Tiles, mosaikiert (mosaic_tiles), rechnet auf max 900 px herunter
+  (MAX_DIM, nearest), faerbt ein und schreibt static_data/overlays/{site}/{sensor}/
+  {YYYYMMDD}.png + bounds.json. Reuse aller extract_timeseries-Bausteine + Catchment-/
+  RGI-Maske. Farben: Wasser blau, saisonaler Schnee weiss, Schnee-auf-Gletscher hellblau,
+  blankes Gletschereis tuerkis, Wolke(253)/NoData/ausserhalb Catchment transparent.
+  Resume-sicher (vorhandene PNGs uebersprungen, --refresh erzwingt neu). Filter:
+  `python render_overlays.py [enguri|zhinvali] [s1|hls] [--refresh]`.
+- app.py: Sektion "Szenen im Zeitverlauf" (Sensor-Radio + select_slider ueber die
+  verfuegbaren Daten) laedt nur fertige PNGs als base64-data-URI in eine leichte
+  folium-Karte (build_overlay_map: Basemap + Catchment-Kontur + ImageOverlay +
+  Reservoir-Umriss). KEIN Rasterrechnen zur Laufzeit. Ohne gerenderte Overlays zeigt
+  die Sektion einen Hinweis (AppTest verifiziert, 0 Exceptions). load_overlay_index /
+  load_overlay_uri @st.cache_data.
+- AUSSTEHEND (User faehrt selbst): `python render_overlays.py` (Drive-Zugriff,
+  mehrere Minuten). Danach PNGs ins Repo committen, damit Streamlit Cloud sie hat.
+- (urspruenglicher Plan, weiterhin gueltig) User-Wunsch: BEIDE Sensoren S1 (Wasser)
+  UND HLS (Schnee/Eis), nicht nur S1.
 - Karte soll die eigentlichen GeoTIFFs anzeigen und gestylt darstellen, sodass man per Datums-Slider durch die Szenen blaettern und die Veraenderungen ueber die Zeit sehen kann (Schnee/Eis/Wasser im Jahresverlauf).
 - ANGEREICHERTE Version: `B01_WTR` (Mosaik) pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
   Wasser (1-5) = blau, saisonaler Schnee = weiss, Schnee-auf-Gletscher = hellblau, blankes Gletschereis = tuerkis/grau.

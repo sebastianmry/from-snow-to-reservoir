@@ -266,6 +266,44 @@ def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
 
 
 # ─────────────────────────────────────────────
+# RASTER OVERLAYS (pre-rendered PNGs, see render_overlays.py)
+# ─────────────────────────────────────────────
+
+OVERLAY_DIR = STATIC_DIR / "overlays"
+# Display label -> sensor subfolder
+OVERLAY_SENSORS = {"Wasser (S1)": "s1", "Schnee & Eis (HLS)": "hls"}
+
+
+@st.cache_data(show_spinner=False)
+def load_overlay_index(aoi_key: str, sensor: str) -> dict | None:
+    """Available pre-rendered scenes for one AOI+sensor: the date list and the
+    shared geographic bounds. Returns None if render_overlays.py has not run."""
+    d = OVERLAY_DIR / aoi_key / sensor
+    bounds_f = d / "bounds.json"
+    if not d.exists() or not bounds_f.exists():
+        return None
+    try:
+        bounds = json.loads(bounds_f.read_text())["bounds"]
+    except Exception:
+        return None
+    dates = sorted(p.stem for p in d.glob("*.png"))
+    if not dates:
+        return None
+    return {"bounds": bounds, "dates": dates}
+
+
+@st.cache_data(show_spinner=False)
+def load_overlay_uri(aoi_key: str, sensor: str, date_str: str) -> str | None:
+    """Read one overlay PNG as a base64 data URI (so it embeds straight into the
+    folium map without needing a served file)."""
+    png = OVERLAY_DIR / aoi_key / sensor / f"{date_str}.png"
+    if not png.exists():
+        return None
+    import base64
+    return "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode()
+
+
+# ─────────────────────────────────────────────
 # MAP
 # ─────────────────────────────────────────────
 
@@ -475,6 +513,37 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
         ).add_to(m)
 
     folium.LayerControl().add_to(m)
+    return m
+
+
+def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
+                      catchment: gpd.GeoDataFrame | None,
+                      reservoir: gpd.GeoDataFrame | None) -> folium.Map:
+    """Light-weight map for the scene browser: just the basemap, the catchment
+    contour for orientation, and the chosen pre-rendered raster as an overlay."""
+    m = folium.Map(tiles="CartoDB positron")
+    m.fit_bounds(bounds)
+
+    if catchment is not None and not catchment.empty:
+        folium.GeoJson(
+            catchment.__geo_interface__,
+            style_function=lambda _: {
+                "color": "#5d6d7e", "weight": 2.0, "fill": False,
+            },
+        ).add_to(m)
+
+    folium.raster_layers.ImageOverlay(
+        image=png_uri, bounds=bounds, opacity=0.9, zindex=10,
+    ).add_to(m)
+
+    # Thin reservoir outline on top, for orientation against the water raster.
+    if reservoir is not None and not reservoir.empty:
+        folium.GeoJson(
+            reservoir.__geo_interface__,
+            style_function=lambda _: {
+                "color": "#0b3d66", "weight": 1.5, "fill": False,
+            },
+        ).add_to(m)
     return m
 
 
@@ -748,6 +817,44 @@ with chart_col:
 
     with tab2:
         st.plotly_chart(chart_snow(df), width="stretch")
+
+# ── Scene browser (pre-rendered raster overlays) ─────────
+st.divider()
+st.subheader("Szenen im Zeitverlauf")
+
+sensor_label = st.radio(
+    "Datensatz", list(OVERLAY_SENSORS.keys()), horizontal=True,
+    help="S1 (Radar, wolkenunabhaengig) zeigt Wasser; HLS (optisch) zeigt Schnee/Eis.",
+)
+sensor = OVERLAY_SENSORS[sensor_label]
+ov = load_overlay_index(aoi["key"], sensor)
+
+if ov is None:
+    st.info(
+        "Fuer dieses Gebiet/Sensor sind noch keine Szenen gerendert. "
+        "`python render_overlays.py` ausfuehren (liest die GeoTIFFs aus Drive und "
+        "legt eingefaerbte PNGs in static_data/overlays/ ab)."
+    )
+else:
+    dates = ov["dates"]
+    chosen = st.select_slider(
+        "Datum", options=dates, value=dates[-1],
+        format_func=lambda d: f"{d[6:8]}.{d[4:6]}.{d[0:4]}",
+    )
+    uri = load_overlay_uri(aoi["key"], sensor, chosen)
+    if uri is None:
+        st.warning("Szene nicht lesbar.")
+    else:
+        ov_map = build_overlay_map(aoi, uri, ov["bounds"], catchment, reservoir)
+        st_folium(ov_map, height=430, use_container_width=True,
+                  key=f"overlay_{aoi['key']}_{sensor}")
+    if sensor == "s1":
+        st.caption("Blau = Wasser (DSWx-S1, Radar, wolkenunabhaengig).")
+    else:
+        st.caption(
+            "Weiss = saisonaler Schnee · Hellblau = Schnee auf Gletscher · "
+            "Tuerkis = blankes Gletschereis · Blau = Wasser (DSWx-HLS, optisch)."
+        )
 
 # ── Data tables (collapsible) ─────────────────
 with st.expander("Rohdaten anzeigen"):
