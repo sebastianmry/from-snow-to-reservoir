@@ -7,7 +7,9 @@
 
 ## Motivation
 
-Georgia's electricity supply depends on hydropower for roughly 80%. Seasonal snow cover and rainfall, with a smaller contribution from the glaciers of the Greater Caucasus, drive the inflow into the reservoirs, and climate change is fundamentally reshaping this system. Both reservoirs studied here sit directly next to the Russia controlled territories of Abkhazia and South Ossetia.
+Georgia's electricity supply depends on hydropower for roughly 80%. Seasonal snowmelt and rainfall drive most of the inflow into the reservoirs, while glacier melt of the Greater Caucasus adds a smaller but climate sensitive contribution that sustains the rivers in late summer once the seasonal snow is gone. Climate change is reshaping this balance: warmer winters shift precipitation from snow to rain and shrink the glaciers, which makes the inflow more variable and harder to plan for.
+
+This matters because both reservoirs studied here sit directly next to the Russia controlled territories of Abkhazia (Enguri) and South Ossetia (Zhinvali). The Enguri complex is shared across that boundary, with the dam on the Georgian controlled side and the power station inside Abkhazia, so its operation depends on a fragile cross boundary arrangement. Zhinvali supplies most of the drinking water and a large share of the power for Tbilisi from a catchment that reaches towards South Ossetia. Ground access to these headwaters is limited and politically sensitive, so satellite monitoring is the practical way to track the snow, glacier and water that feed two reservoirs critical to Georgia's energy and water security.
 
 ## Areas of Interest
 
