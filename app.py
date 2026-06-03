@@ -518,9 +518,11 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
 
 def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
                       catchment: gpd.GeoDataFrame | None,
-                      reservoir: gpd.GeoDataFrame | None) -> folium.Map:
-    """Light-weight map for the scene browser: just the basemap, the catchment
-    contour for orientation, and the chosen pre-rendered raster as an overlay."""
+                      reservoir: gpd.GeoDataFrame | None,
+                      glaciers: gpd.GeoDataFrame | None = None) -> folium.Map:
+    """Light-weight map for the scene browser: basemap, catchment contour, the
+    chosen pre-rendered raster, and (for HLS) the RGI glacier outlines so glaciers
+    are always clearly bounded - whether currently snow-covered or bare ice."""
     m = folium.Map(tiles="CartoDB positron")
     m.fit_bounds(bounds)
 
@@ -536,6 +538,16 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
         image=png_uri, bounds=bounds, opacity=0.9, zindex=10,
     ).add_to(m)
 
+    # RGI glacier outlines (violet, no fill) so the glacier extent reads clearly
+    # against the cyan snow field / over the bare-ice raster.
+    if glaciers is not None and not glaciers.empty:
+        folium.GeoJson(
+            glaciers.__geo_interface__,
+            style_function=lambda _: {
+                "color": "#5e4b8b", "weight": 1.0, "fill": False, "opacity": 0.9,
+            },
+        ).add_to(m)
+
     # Thin reservoir outline on top, for orientation against the water raster.
     if reservoir is not None and not reservoir.empty:
         folium.GeoJson(
@@ -545,6 +557,47 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
             },
         ).add_to(m)
     return m
+
+
+# Overlay legend swatches - colours match the rendered PNG classes (render_overlays.py).
+_OVERLAY_LEGEND = {
+    "s1": [("#1f6fc0", "Wasser")],
+    "hls": [
+        ("#5ac8e6", "Saisonaler Schnee"),
+        ("#8e7cc3", "Schnee auf Gletscher"),
+        ("#5e4b8b", "Blankes Gletschereis"),
+        ("#1f6fc0", "Wasser"),
+    ],
+}
+
+
+def render_overlay_legend(sensor: str):
+    """Compact colour-swatch legend under the scene-browser map."""
+    items = _OVERLAY_LEGEND.get(sensor, [])
+    chips = "".join(
+        f'<span style="display:inline-flex;align-items:center;margin-right:16px;'
+        f'white-space:nowrap;">'
+        f'<span style="width:14px;height:14px;border-radius:3px;background:{color};'
+        f'border:1px solid rgba(0,0,0,0.25);margin-right:6px;"></span>{label}</span>'
+        for color, label in items
+    )
+    if sensor == "hls":
+        chips += (
+            '<span style="display:inline-flex;align-items:center;white-space:nowrap;">'
+            '<span style="width:14px;height:0;border-top:2px solid #5e4b8b;'
+            'margin-right:6px;"></span>Gletschergrenze (RGI)</span>'
+        )
+    st.markdown(
+        f'<div style="display:flex;flex-wrap:wrap;gap:6px 0;font-size:0.85rem;'
+        f'margin-top:4px;">{chips}</div>',
+        unsafe_allow_html=True,
+    )
+    if sensor == "s1":
+        st.caption(
+            "DSWx-S1 (Radar, wolkenunabhaengig, 30-m-Raster). SAR erfasst vor allem "
+            "offene Wasserflaechen wie den Stausee; schmale Gebirgsfluesse fallen meist "
+            "unter die Pixelgroesse und werden kaum erkannt."
+        )
 
 
 # ─────────────────────────────────────────────
@@ -845,16 +898,20 @@ else:
     if uri is None:
         st.warning("Szene nicht lesbar.")
     else:
-        ov_map = build_overlay_map(aoi, uri, ov["bounds"], catchment, reservoir)
+        # Clip the glacier outlines to the catchment so they end exactly at the
+        # basin boundary - matching the catchment-masked raster and the
+        # catchment-relative statistics (glaciers outside don't feed this reservoir).
+        glac_arg = None
+        if sensor == "hls" and glaciers is not None:
+            glac_arg = (gpd.clip(glaciers, catchment)
+                        if catchment is not None and not catchment.empty
+                        else glaciers)
+        ov_map = build_overlay_map(
+            aoi, uri, ov["bounds"], catchment, reservoir, glaciers=glac_arg,
+        )
         st_folium(ov_map, height=430, use_container_width=True,
                   key=f"overlay_{aoi['key']}_{sensor}")
-    if sensor == "s1":
-        st.caption("Blau = Wasser (DSWx-S1, Radar, wolkenunabhaengig).")
-    else:
-        st.caption(
-            "Weiss = saisonaler Schnee · Hellblau = Schnee auf Gletscher · "
-            "Tuerkis = blankes Gletschereis · Blau = Wasser (DSWx-HLS, optisch)."
-        )
+    render_overlay_legend(sensor)
 
 # ── Data tables (collapsible) ─────────────────
 with st.expander("Rohdaten anzeigen"):

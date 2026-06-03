@@ -56,11 +56,15 @@ SENSORS     = ["s1", "hls"]
 # pixels so the PNGs stay small (fast to load, light on the laptop).
 MAX_DIM = 900
 
-# RGBA colours (match the dashboard legend / PROJECT_CONTEXT colour scheme).
-C_WATER          = (31, 111, 192, 235)    # vivid blue, like the reservoir polygon
-C_SNOW_SEASONAL  = (255, 255, 255, 230)   # white = fresh/seasonal snow
-C_SNOW_GLACIER   = (168, 216, 234, 235)   # light blue = snow lying on a glacier
-C_BARE_ICE       = (95, 168, 160, 235)    # teal = exposed glacier ice (melt signal)
+# RGBA colours. Tuned for clear separation on the light CartoDB-positron basemap:
+# glaciers share the violet identity of the static map (light = snow on them, dark
+# = bare ice), seasonal snow is cyan (white is invisible on the white basemap), and
+# water stays blue. Glacier violet matches the static map (fill #cfc6e8 / #7e6fb8).
+C_WATER          = (31, 111, 192, 245)    # vivid blue, like the reservoir polygon
+C_SNOW_SEASONAL  = (90, 200, 230, 240)    # cyan = fresh/seasonal snow (pops on white)
+C_SNOW_GLACIER   = (142, 124, 195, 245)   # medium violet = snow on a glacier (stands
+                                          # out from the cyan snow field)
+C_BARE_ICE       = (94, 75, 139, 250)     # dark violet = exposed glacier ice (melt)
 TRANSPARENT      = (0, 0, 0, 0)
 
 
