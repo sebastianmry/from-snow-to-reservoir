@@ -1,17 +1,13 @@
-earthaccess
-rioxarray
-rasterio
-pydrive2
-tqdm
-python-dotenv
-numpy
+# Runtime dependencies for the Streamlit dashboard (app.py).
+# Streamlit Cloud installs this file automatically. Kept slim on purpose:
+# the heavy pipeline deps (rasterio, rioxarray, earthaccess, pydrive2, ...)
+# are NOT imported at runtime - see requirements-pipeline.txt for those.
+streamlit
 pandas
 pyarrow
 geopandas
 shapely
-scipy
-requests
-streamlit
+numpy
 plotly
 folium
 streamlit-folium
