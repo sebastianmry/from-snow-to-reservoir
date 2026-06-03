@@ -425,6 +425,10 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             "weight": 1.3,
             "fillOpacity": 0.9,
         }
+        # Clip to the catchment: glaciers outside the basin don't drain into this
+        # reservoir and aren't in the statistics, so showing them only confuses.
+        if catchment is not None and not catchment.empty:
+            glaciers = gpd.clip(glaciers, catchment)
         has_name = "glac_name" in glaciers.columns
         named = glaciers[glaciers["glac_name"] != ""] if has_name else glaciers
         unnamed = glaciers[glaciers["glac_name"] == ""] if has_name else glaciers.iloc[0:0]
@@ -848,7 +852,12 @@ with map_col:
     if catchment is not None:
         caps.append("Einzugsgebiet (HydroBASINS)")
     if glaciers is not None:
-        caps.append(f"{len(glaciers)} RGI v7 Gletscherpolygone")
+        # Count only glaciers inside the basin, matching the catchment-clipped map.
+        if catchment is not None and not catchment.empty:
+            n_glac = int(glaciers.geometry.intersects(catchment.geometry.union_all()).sum())
+        else:
+            n_glac = len(glaciers)
+        caps.append(f"{n_glac} RGI v7 Gletscherpolygone")
     else:
         caps.append("RGI-Gletscherdaten nicht gefunden")
     if reservoir is not None:
