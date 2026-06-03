@@ -22,9 +22,28 @@ env/
 
 # Data / Output (zu groß für GitHub)
 data/
-static_data/
 *.csv
+
+# Parquet: raw outputs are ignored, but the small derived time series the
+# dashboard loads at runtime are force-included below.
 *.parquet
+!enguri_timeseries.parquet
+!zhinvali_timeseries.parquet
+!enguri_s1_timeseries.parquet
+!zhinvali_s1_timeseries.parquet
+
+# static_data: ignore everything (2.7 GB of raw HydroLAKES/RIVERS/BASINS source),
+# then un-ignore only the small derived artefacts the deployed app needs.
+static_data/*
+!static_data/overlays/
+!static_data/catchments.geojson
+!static_data/georgia_rivers.geojson
+!static_data/reservoirs.geojson
+!static_data/RGI2000-v7.0-G-12_caucasus_middle_east.cpg
+!static_data/RGI2000-v7.0-G-12_caucasus_middle_east.dbf
+!static_data/RGI2000-v7.0-G-12_caucasus_middle_east.prj
+!static_data/RGI2000-v7.0-G-12_caucasus_middle_east.shp
+!static_data/RGI2000-v7.0-G-12_caucasus_middle_east.shx
 
 # Jupyter
 .ipynb_checkpoints/
