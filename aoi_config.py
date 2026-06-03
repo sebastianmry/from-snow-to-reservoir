@@ -49,7 +49,7 @@ AOIS = {
         # cleaner/more stable reservoir series with full coverage. Coverage != lake
         # measurement quality.
         "s1_anchor": "20240829",
-        "display_label": "Enguri (West-Georgien)",
+        "display_label": "Enguri (Western Georgia)",
         "center": (42.884, 42.753),
         "dam_label": "Enguri-Staudamm (271 m)",
         "zoom": 9,
@@ -63,7 +63,7 @@ AOIS = {
         # the Zhinvali); old box reached to 42.80 N and wrongly included them.
         "clip_box": (44.3133, 42.0008, 45.245, 42.6283),
         "s1_anchor": "20240825",
-        "display_label": "Zhinvali (Ost-Georgien)",
+        "display_label": "Zhinvali (Eastern Georgia)",
         "center": (44.725, 42.40),
         "dam_label": "Zhinvali-Staudamm",
         "zoom": 9,
