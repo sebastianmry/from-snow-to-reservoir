@@ -478,8 +478,8 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             ).add_to(river_group)
         river_group.add_to(m)
 
-        # Persistent reservoir-name label on the lake itself (e.g. Zhinvali-
-        # Stausee), falling back to the main-stem midpoint if no reservoir polygon.
+        # Persistent reservoir-name label on the lake itself (e.g. Zhinvali
+        # Reservoir), falling back to the main-stem midpoint if no reservoir polygon.
         anchor = res_label_anchor if res_label_anchor else river_label_point(rivers)
         name = RESERVOIR_NAME.get(aoi["key"])
         if anchor and name:

@@ -1,4 +1,4 @@
-# Credentials – nie ins Repo!
+# Credentials - never commit!
 client_secrets.json
 gdrive_credentials.json
 gdrive_credentials.txt
@@ -17,14 +17,14 @@ __pycache__/
 venv/
 env/
 
-# Lokale Editor-/Tool-Einstellungen
+# Local editor / tool settings
 .claude/settings.local.json
 
-# Data / Output (zu groß für GitHub)
+# Data / Output (too large for GitHub)
 data/
 *.csv
 
-# Local tile store (storage.py LocalStore, e.g. CI or PIPELINE_STORE=local)
+# Local tile store (storage.py LocalStore; default ./opera_local, or PIPELINE_LOCAL_DIR)
 opera_tiles/
 opera_local/
 
