@@ -332,10 +332,26 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
 - Saisonales Signal sichtbar: Zhinvali-Wasser faellt von ~48 km² (Herbst) auf ~28-35 km²
   (Fruehjahr) - echte Stausee-Absenkung, wolkenunabhaengig erfasst.
 
-### GEPLANT (Stufe 4): Auto-Updates / Deployment - OPTION A
-- GitHub Action taeglich: `download_to_drive.py` + `extract_timeseries.py`, Parquets auto-committen.
-- GitHub Secrets fuer NASA + Google Drive credentials.
-- Streamlit Cloud verbunden mit Repo, oeffentliche URL fuer die Doku.
+### ERLEDIGT (Stufe 4): Deployment + Auto-Updates
+- **Live:** Streamlit Community Cloud, https://from-snow-to-reservoir.streamlit.app/
+  (repo public, branch main, `app.py`). App liest zur Laufzeit NUR lokale Dateien
+  (Parquets, GeoJSONs, RGI-Shapefile, Overlay-PNGs), daher KEINE Secrets in der Cloud.
+- **Repo self-contained:** `.gitignore` ist ignore-all-then-un-ignore. Die ~12 MB
+  Runtime-Artefakte sind eingecheckt, die 2.7 GB Rohdaten (HydroLAKES/RIVERS/BASINS)
+  bleiben draussen. `requirements.txt` = schlanke App-Deps (Cloud), `requirements-pipeline.txt`
+  = volle Pipeline-Deps.
+- **Storage-Abstraktion (`storage.py`):** Backend per Env `PIPELINE_STORE` waehlbar.
+  `DriveStore` (Default, lokal unveraendert) vs `LocalStore` (Ordner unter
+  `PIPELINE_LOCAL_DIR`, keine Google-Auth -> headless in CI). Die frueher in
+  download_common/extract_timeseries duplizierten Drive-Helfer sind hier zentralisiert;
+  download/extract/render/derive_reservoir laufen ueber das Store-Objekt.
+- **Auto-Update (`.github/workflows/update-data.yml`):** woechentlich (Mo 03:00 UTC) +
+  manueller Dispatch. Laeuft `PIPELINE_STORE=local`: download -> extract -> render, dann
+  werden geaenderte Parquets + Overlay-PNGs zurueck committet -> Streamlit re-deployt.
+  Tiles liegen in `runner.temp` (nie committet); ein `actions/cache` von Tile-Store und
+  Per-Date-Cache haelt die Laeufe inkrementell. Einziges Secret: `EARTHDATA_USERNAME` /
+  `EARTHDATA_PASSWORD` (kein Google-Zeug in CI). `search_granules()` retryt CMR-5xx
+  (NASA-seitige transiente Fehler) 3x mit Backoff.
 
 ### Mosaik-Refactor (umgesetzt)
 - **Problem:** Bei Zhinvali liegen Stausee (Lat 42.13, Sued) und Gletscher (Lat 42.52+, Nord) in verschiedenen MGRS-Kacheln. Der alte `reservoir_is_covered`-Filter lud nur Sued-Kacheln -> Gletscherwerte komplett 0. Enguri war ok (Stausee+Gletscher in denselben Kacheln).
