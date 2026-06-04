@@ -38,7 +38,7 @@ NASA Earthdata (earthaccess)
         |
         v
 download_hls.py / download_s1.py   # footprint pre-filter, in-memory clip to AOI,
-        |  (download_common.py)    # all MGRS tiles, upload to Google Drive
+        |  (download_common.py)    # all MGRS tiles, write to the tile store
         v
 extract_timeseries.py    # per date: merge all tiles into an AOI mosaic (EPSG:4326),
         |                # raster-vector overlay with RGI glaciers, quality filters
@@ -67,7 +67,7 @@ The central AOI definition (clip box and S1 anchor per AOI) lives in `aoi_config
 
 Instead of a coarse box, the AOI is the **catchment above the dam**. `download_catchments.py` loads HydroBASINS (lev12), locates the sub basin at the dam (pour point) and, using the flow topology (`HYBAS_ID`/`NEXT_DOWN`), unions all upstream sub basins into one catchment polygon (`static_data/catchments.geojson`). Its bounding box (plus a buffer) is the `clip_box` for the download; the polygon masks the statistics in `extract_timeseries.py`, which makes `valid_px_pct` **catchment relative** (the denominator is catchment pixels, not the whole box). This solves three things: (1) it trims irrelevant box corners, (2) it guarantees the full watershed including all inflows (Enguri: the eastern Svaneti headwaters that the old box cut off), (3) it makes snow and glacier numbers hydrologically meaningful, since glaciers that drain elsewhere are excluded.
 
-Drive folder structure: `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`
+Tile store folder structure: `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`
 
 ### Mosaic approach
 
@@ -91,7 +91,7 @@ SAR water classification depends on the acquisition geometry (layover and shadow
 
 ### Cache and resume
 
-`extract_timeseries.py` stores every date result (including skipped ones, **with their stats**) in `static_data/cache/{site}_{s1,hls}.json`. Re-runs skip already computed dates, so the expensive Drive download happens only once. `--refresh` ignores the cache, `--skip-s1` and `--skip-hls` run only one sensor. `--recompute` re-reads only the result relevant dates (`ok` plus dates that newly qualify under the *current* thresholds) and takes cloud or below threshold skips from the cache **without** a Drive read, which is much faster after a logic or threshold change (for example Zhinvali: 50 dates read instead of 249).
+`extract_timeseries.py` stores every date result (including skipped ones, **with their stats**) in `static_data/cache/{site}_{s1,hls}.json`. Re-runs skip already computed dates, so the expensive tile read happens only once. `--refresh` ignores the cache, `--skip-s1` and `--skip-hls` run only one sensor. `--recompute` re-reads only the result relevant dates (`ok` plus dates that newly qualify under the *current* thresholds) and takes cloud or below threshold skips from the cache **without** a store read, which is much faster after a logic or threshold change (for example Zhinvali: 50 dates read instead of 249).
 
 ### Footprint pre-filter
 
@@ -144,8 +144,8 @@ conda activate georgia-sar
 pip install -r requirements.txt
 ```
 
-Google Drive authentication (one time):
-- `client_secrets.json` and `settings.yaml` are required (not in the repo, see the Google Drive API documentation).
+Tile store (where the downloaded tiles are kept):
+- The download/extract/render scripts use a local folder, `./opera_local` by default (override with the `PIPELINE_LOCAL_DIR` env var). No cloud account is needed.
 
 NASA Earthdata login:
 - Create an account at [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov).
@@ -168,8 +168,8 @@ python probe_coverage.py --sample 3  # stage B: load 3 test files per candidate 
                                      #   enter it in aoi_config.py, THEN run download_s1.py
 
 # 2. Download and process the satellite data
-python download_hls.py          # OPERA DSWx-HLS (optical) -> Google Drive
-python download_s1.py           # OPERA DSWx-S1 (radar)    -> Google Drive
+python download_hls.py          # OPERA DSWx-HLS (optical) -> tile store
+python download_s1.py           # OPERA DSWx-S1 (radar)    -> tile store
 python derive_reservoir.py      # S1 water extent -> real reservoir footprint (once after S1 download)
 python extract_timeseries.py    # mosaic + time series -> *_timeseries.parquet (HLS) + *_s1_timeseries.parquet (S1)
                                 # options: --skip-s1 / --skip-hls / --refresh / --recompute
@@ -186,9 +186,9 @@ streamlit run app.py
 
 | Script | Purpose |
 |--------|---------|
-| `download_hls.py` | Download OPERA DSWx-HLS (optical, only B01_WTR, cloud via flag 253) to Google Drive. |
-| `download_s1.py` | Download OPERA DSWx-S1 (radar, B01_WTR) to Google Drive. `orbit_filter`: loads only the anchored orbit (`s1_anchor`, one 12 day phase), about 1/4 of the dates. |
-| `download_common.py` | Shared logic for both downloads: auth, Drive, footprint pre-filter, **S1 orbit pre-filter** (`orbit_phase`, anchor phase only), clipping, MGRS names. Robust download via a requests session with a hard read timeout (no hanging) plus retry and backoff for transient 5xx and 429 (not run directly). |
+| `download_hls.py` | Download OPERA DSWx-HLS (optical, only B01_WTR, cloud via flag 253) to the tile store. |
+| `download_s1.py` | Download OPERA DSWx-S1 (radar, B01_WTR) to the tile store. `orbit_filter`: loads only the anchored orbit (`s1_anchor`, one 12 day phase), about 1/4 of the dates. |
+| `download_common.py` | Shared logic for both downloads: auth, tile store, footprint pre-filter, **S1 orbit pre-filter** (`orbit_phase`, anchor phase only), clipping, MGRS names. Robust download via a requests session with a hard read timeout (no hanging) plus retry and backoff for transient 5xx and 429 (not run directly). |
 | `extract_timeseries.py` | Build the tile mosaic per date, mask to the catchment polygon (`valid_px_pct` catchment relative), filter S1 to the anchored orbit, overlay with RGI glaciers and the reservoir footprint (`reservoir_area_km2`), save the time series as CSV and Parquet (with a per date cache). |
 | `render_overlays.py` | Pre-render each filtered scene as a coloured PNG overlay for the dashboard scene browser (water, seasonal snow, snow on glacier, bare ice), downsampled and catchment masked. Reuses the extract_timeseries building blocks; resume safe, `--refresh` to re-render. |
 | `probe_orbits.py` | Diagnostic (read-only): inspect S1 orbit metadata (satellite, phase), validates the orbit dedup. |
@@ -203,7 +203,7 @@ streamlit run app.py
 
 ## Tech Stack
 
-Python 3.11, earthaccess, rasterio, rioxarray, geopandas, shapely, scipy, pydrive2, pandas, pyarrow, Pillow, tqdm, streamlit, plotly, folium, streamlit-folium
+Python 3.11, earthaccess, rasterio, rioxarray, geopandas, shapely, scipy, pandas, pyarrow, Pillow, tqdm, streamlit, plotly, folium, streamlit-folium
 
 ## License
 

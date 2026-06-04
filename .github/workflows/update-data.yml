@@ -21,12 +21,6 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    env:
-      # Headless storage: no Google Drive, tiles live in a temp dir outside the
-      # repo so they are never committed (see storage.py LocalStore). The actual
-      # path is set in "Configure tile store" below ($RUNNER_TEMP is not available
-      # in this job-level env block, only inside steps).
-      PIPELINE_STORE: local
 
     steps:
       - name: Checkout

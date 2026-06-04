@@ -32,7 +32,7 @@ Zentrale Definition in `aoi_config.py` (Single Source of Truth, alle Skripte imp
 - **Aufteilung:** Zwei schlanke Start-Skripte (HLS optisch, S1 Radar); gemeinsame Logik in `download_common.py` (nie direkt ausgefuehrt).
 - **Quelle:** NASA OPERA DSWx Produkte via `earthaccess`. HLS laedt `B01_WTR` + `B09_CLOUD`, S1 laedt `B01_WTR`.
 - **Footprint-Vorfilter:** Pro Datum wird die Vereinigung der Kachel-Footprints gegen das AOI geprueft; nur Tage mit >= 99% AOI-Abdeckung werden ueberhaupt heruntergeladen (`FOOTPRINT_MIN_COVER`). Spart Bandbreite, reine Geometrie-Rechnung.
-- **Drive-Struktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`. Dateinamen mit MGRS-Kachel-ID.
+- **Store-Struktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`. Dateinamen mit MGRS-Kachel-ID.
 - **Eigenschaften:** Exponential Backoff bei Verbindungsabbruechen, `MAX_WORKERS = 2` (RAM-Schonung), Resume-Logik via Dateiname-Vergleich (paginiert).
 
 ### Stufe 2: `extract_timeseries.py` (Wissenschaftliche Auswertung)
@@ -69,7 +69,7 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   ~30 Min. `--refresh` ignoriert den Cache. `--skip-s1` / `--skip-hls` fuer Teil-Laeufe.
 - **Vorfilter:** `MIN_TILES = 2` ueberspringt Einzelkachel-Tage vor dem Download (decken die
   zonenuebergreifende AOI nie ab).
-- **Output-Dateien (lokal, NICHT im Drive):**
+- **Output-Dateien (lokal, NICHT im Tile-Store):**
   * HLS: `{site}_timeseries.csv/.parquet` (water, snow, glacier, cloud, valid_px_pct)
   * S1:  `{site}_s1_timeseries.csv/.parquet` (water_km2, valid_px_pct)
 
@@ -340,18 +340,35 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
   Runtime-Artefakte sind eingecheckt, die 2.7 GB Rohdaten (HydroLAKES/RIVERS/BASINS)
   bleiben draussen. `requirements.txt` = schlanke App-Deps (Cloud), `requirements-pipeline.txt`
   = volle Pipeline-Deps.
-- **Storage-Abstraktion (`storage.py`):** Backend per Env `PIPELINE_STORE` waehlbar.
-  `DriveStore` (Default, lokal unveraendert) vs `LocalStore` (Ordner unter
-  `PIPELINE_LOCAL_DIR`, keine Google-Auth -> headless in CI). Die frueher in
-  download_common/extract_timeseries duplizierten Drive-Helfer sind hier zentralisiert;
-  download/extract/render/derive_reservoir laufen ueber das Store-Objekt.
+- **Tile-Store (`storage.py`):** EIN lokaler Filesystem-Store (`LocalStore`, Ordner unter
+  `PIPELINE_LOCAL_DIR`, Default `./opera_local`, keine Cloud-Auth -> laeuft headless lokal
+  UND in CI gleich). Die frueher in download_common/extract_timeseries duplizierten
+  Speicher-Helfer sind hier zentralisiert; download/extract/render/derive_reservoir laufen
+  ueber das Store-Objekt (`ensure_folder`/`get_folder_id`/`existing_names`/`list_tifs`/
+  `write`/`read_bytes`). Google Drive wurde komplett entfernt (siehe Changelog 2026-06-04).
 - **Auto-Update (`.github/workflows/update-data.yml`):** woechentlich (Mo 03:00 UTC) +
-  manueller Dispatch. Laeuft `PIPELINE_STORE=local`: download -> extract -> render, dann
+  manueller Dispatch: download -> extract -> render, dann
   werden geaenderte Parquets + Overlay-PNGs zurueck committet -> Streamlit re-deployt.
   Tiles liegen in `runner.temp` (nie committet); ein `actions/cache` von Tile-Store und
   Per-Date-Cache haelt die Laeufe inkrementell. Einziges Secret: `EARTHDATA_USERNAME` /
   `EARTHDATA_PASSWORD` (kein Google-Zeug in CI). `search_granules()` retryt CMR-5xx
   (NASA-seitige transiente Fehler) 3x mit Backoff.
+
+### ERLEDIGT: Google Drive komplett entfernt (2026-06-04)
+- **Motivation:** Nach dem CI-Umbau lief die Pipeline ohnehin lokal/headless (`LocalStore`);
+  der `DriveStore`-Pfad war toter Ballast (Google-OAuth, pydrive2-Dependency, `PIPELINE_STORE`-
+  Umschaltung). Auf Branch `refactor/remove-drive` ersatzlos rausgeworfen.
+- **Code:** `storage.py` -> nur noch `LocalStore`, `get_store()` oeffnet immer den lokalen
+  Store (kein Backend-Switch mehr). `aoi_config.DRIVE_PARENT` -> `DATA_ROOT`,
+  `collection["drive_subfolder"]` -> `["subfolder"]`. Alle `PIPELINE_STORE`-Reads/-Prints raus
+  (download_common/extract_timeseries/render_overlays). Workflow: job-level `env: PIPELINE_STORE`
+  entfernt (lokal ist jetzt Default).
+- **Deps/Doku:** `pydrive2` aus requirements-pipeline.txt raus. README + app.py-Hinweise auf
+  "tile store" umformuliert; Drive-Setup-Schritt durch `./opera_local` (override per
+  `PIPELINE_LOCAL_DIR`) ersetzt. Keine Google-Secrets mehr noetig (client_secrets.json/
+  settings.yaml/gdrive_credentials.json waren eh gitignored, bleiben lokal liegen, ungenutzt).
+- **Verifiziert:** keine pydrive/DRIVE_PARENT/PIPELINE_STORE-Reste im Code, alle Module
+  importieren, `get_store()` -> `LocalStore`.
 
 ### Mosaik-Refactor (umgesetzt)
 - **Problem:** Bei Zhinvali liegen Stausee (Lat 42.13, Sued) und Gletscher (Lat 42.52+, Nord) in verschiedenen MGRS-Kacheln. Der alte `reservoir_is_covered`-Filter lud nur Sued-Kacheln -> Gletscherwerte komplett 0. Enguri war ok (Stausee+Gletscher in denselben Kacheln).
@@ -359,8 +376,7 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
 - **Achtung:** Dateinamen-Aenderung erfordert vollstaendigen Re-Download. Alte HLS-Dateien (ohne MGRS) ggf. vorher im Drive loeschen.
 
 ### Bekannte Eigenheiten
-- **Drive-Ordnerstruktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/` (Parent-Ordner `DRIVE_PARENT = "OPERA_DSWx"`). Sowohl Download-Skripte als auch `extract_timeseries.py` nutzen diesen Parent.
-- **Drive-Pagination:** `get_existing_filenames` nutzt `maxResults=1000` gegen das 100-Datei-Limit der API.
+- **Store-Ordnerstruktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/` (Top-Level `DATA_ROOT = "OPERA_DSWx"` in aoi_config.py). Sowohl Download-Skripte als auch `extract_timeseries.py` / `render_overlays.py` / `derive_reservoir.py` nutzen diesen Root.
 
 ---
 
@@ -368,8 +384,7 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
 - `earthaccess` — NASA Granule-Suche und Download
 - `rioxarray` / `rasterio` — In-Memory Rasterverarbeitung und Clipping
 - `geopandas` — RGI Vektordaten laden und auf AOI zuschneiden
-- `pydrive2` — Google Drive Upload/Download
 - `pandas` / `pyarrow` — Parquet-Output fuer Streamlit
 - `tqdm` — Fortschrittsanzeige
+- Tile-Store: lokales Filesystem unter `PIPELINE_LOCAL_DIR` (Default `./opera_local`)
 - Conda-Environment: `georgia-sar`
-- Google Drive Root Folder ID: `1EdYn2RbULuEYj8dnPbK9Zshia6G50ssE`

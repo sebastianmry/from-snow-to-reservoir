@@ -894,8 +894,8 @@ ov = load_overlay_index(aoi["key"], sensor)
 if ov is None:
     st.info(
         "No scenes have been rendered for this area and sensor yet. "
-        "Run `python render_overlays.py` (it reads the GeoTIFFs from Drive and "
-        "writes coloured PNGs into static_data/overlays/)."
+        "Run `python render_overlays.py` (it reads the GeoTIFFs from the tile "
+        "store and writes coloured PNGs into static_data/overlays/)."
     )
 else:
     dates = ov["dates"]

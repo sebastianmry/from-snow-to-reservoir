@@ -1,7 +1,7 @@
 # Runtime dependencies for the Streamlit dashboard (app.py).
 # Streamlit Cloud installs this file automatically. Kept slim on purpose:
-# the heavy pipeline deps (rasterio, rioxarray, earthaccess, pydrive2, ...)
-# are NOT imported at runtime - see requirements-pipeline.txt for those.
+# the heavy pipeline deps (rasterio, rioxarray, earthaccess, ...) are NOT
+# imported at runtime - see requirements-pipeline.txt for those.
 streamlit
 pandas
 pyarrow

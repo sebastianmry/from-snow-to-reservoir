@@ -4,8 +4,8 @@ Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Pre-renders the DSWx scenes as small, coloured PNG overlays so the dashboard can
 step through them on a date slider WITHOUT doing any raster work at runtime (the
-laptop is weak, the TIFs are large and Drive is slow). All the heavy lifting -
-download from Drive, mosaic, classify, downsample - happens once here; the app
+laptop is weak and the TIFs are large). All the heavy lifting -
+read from the store, mosaic, classify, downsample - happens once here; the app
 only loads finished PNGs via folium.ImageOverlay.
 
 For each AOI and sensor it renders exactly the dates that made it into the final
@@ -34,7 +34,6 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -47,9 +46,9 @@ from aoi_config import AOIS, AOI_1, AOI_2
 from extract_timeseries import (
     parse_filename, mosaic_tiles, load_catchment, load_glacier_mask,
     find_rgi, rasterize_glaciers,
-    NODATA, WATER_VALUES, SNOW_VALUE, CLOUD_WTR_VALUE, DRIVE_PARENT,
+    NODATA, WATER_VALUES, SNOW_VALUE, CLOUD_WTR_VALUE, DATA_ROOT,
 )
-# Tile storage backend (Google Drive by default, local dir for headless CI).
+# Local tile store (filesystem under PIPELINE_LOCAL_DIR).
 from storage import get_store, ROOT
 
 OVERLAY_DIR = Path("static_data") / "overlays"
@@ -208,10 +207,9 @@ def main():
     want_sensor = next((a for a in flt if a in SENSORS), None)
 
     store = get_store()
-    print(f"Tile store: {os.environ.get('PIPELINE_STORE', 'drive')}")
-    opera_root = store.get_folder_id(DRIVE_PARENT, ROOT)
+    opera_root = store.get_folder_id(DATA_ROOT, ROOT)
     if not opera_root:
-        print(f"'{DRIVE_PARENT}' folder not found - run the download scripts first")
+        print(f"'{DATA_ROOT}' folder not found - run the download scripts first")
         sys.exit(1)
 
     sensor_roots = {s: store.get_folder_id(s, opera_root) for s in SENSORS}
@@ -225,7 +223,7 @@ def main():
                 continue
             root = sensor_roots.get(sensor)
             if not root:
-                print(f"  '{sensor}' folder not found under {DRIVE_PARENT} - skip")
+                print(f"  '{sensor}' folder not found under {DATA_ROOT} - skip")
                 continue
             render_site_sensor(store, aoi, sensor, root, args.refresh)
 

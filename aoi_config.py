@@ -12,7 +12,7 @@ in static_data/catchments.geojson and is used to mask the analysis statistics
 reservoir's drainage basin.
 
 Per-AOI fields:
-  name        - short site key, also the Drive subfolder name
+  name        - short site key, also the per-site subfolder name in the store
   label       - long descriptive label (download logs)
   dam         - (lon, lat) of the dam = catchment pour-point / reservoir outlet
   clip_box    - (min_lon, min_lat, max_lon, max_lat) box for download + clip
@@ -27,8 +27,8 @@ from pathlib import Path
 STATIC_DIR = Path("static_data")
 CATCHMENTS_GEOJSON = STATIC_DIR / "catchments.geojson"
 
-# Parent folder in Google Drive holding the hls/ and s1/ subfolders
-DRIVE_PARENT = "OPERA_DSWx"
+# Top-level folder in the tile store holding the hls/ and s1/ subfolders
+DATA_ROOT = "OPERA_DSWx"
 
 # Canonical AOI table, keyed by site name.
 AOIS = {

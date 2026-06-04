@@ -7,10 +7,10 @@ Common code used by download_hls.py and download_s1.py:
   2. Footprint pre-filter: only dates whose tile footprints cover the AOI
      are downloaded at all (skips partial-coverage dates before any download)
   3. rioxarray clips each tile to the AOI bbox in-memory
-  4. MGRS-tagged GeoTIFF uploaded to Google Drive
+  4. MGRS-tagged GeoTIFF written to the tile store
   5. Full-AOI mosaic + quality filtering happens later in extract_timeseries.py
 
-Drive folder structure:
+Store folder structure:
   OPERA_DSWx/
     hls/enguri/      <- OPERA_L3_DSWX-HLS_V1  B01_WTR + B09_CLOUD
     hls/zhinvali/
@@ -19,7 +19,6 @@ Drive folder structure:
 """
 
 import io
-import os
 import re
 import time
 import warnings
@@ -43,9 +42,9 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="earthaccess")
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-# AOI definition (bbox / clip_box / DRIVE_PARENT) is centralized in aoi_config.py
-from aoi_config import AOI_LIST as AOIS, AOI_1, AOI_2, DRIVE_PARENT  # noqa: F401
-# Tile storage backend (Google Drive by default, local dir for headless CI).
+# AOI definition (bbox / clip_box / DATA_ROOT) is centralized in aoi_config.py
+from aoi_config import AOI_LIST as AOIS, AOI_1, AOI_2, DATA_ROOT  # noqa: F401
+# Local tile store (filesystem under PIPELINE_LOCAL_DIR).
 from storage import get_store, ROOT
 
 DATE_START = "2024-08-01"
@@ -227,8 +226,8 @@ def search_granules(**kwargs):
 
 def process_aoi(aoi: dict, collection: dict, store):
     # Layout: OPERA_DSWx / hls|s1 / enguri|zhinvali
-    parent_id = store.ensure_folder(DRIVE_PARENT, ROOT)
-    sub_id    = store.ensure_folder(collection["drive_subfolder"], parent_id)
+    parent_id = store.ensure_folder(DATA_ROOT, ROOT)
+    sub_id    = store.ensure_folder(collection["subfolder"], parent_id)
     aoi_id    = store.ensure_folder(aoi["name"], sub_id)
 
     print(f"  Fetching existing files from store...")
@@ -303,7 +302,6 @@ def process_aoi(aoi: dict, collection: dict, store):
 
 def run(collection: dict):
     """Entry point used by download_hls.py / download_s1.py."""
-    store_kind = os.environ.get("PIPELINE_STORE", "drive").lower()
     print("=" * 60)
     print("FROM SNOW TO RESERVOIR - Download OPERA tiles")
     print(f"Product  : {collection['short_name']}")
@@ -311,7 +309,7 @@ def run(collection: dict):
     print(f"Period   : {DATE_START} -> {DATE_END}")
     print(f"Coverage : footprint pre-filter >= {FOOTPRINT_MIN_COVER*100:.0f}% AOI, "
           f"all MGRS tiles, MGRS-tagged names")
-    print(f"Store    : {store_kind} -> {DRIVE_PARENT}/{collection['drive_subfolder']}/<aoi>/")
+    print(f"Store    : {DATA_ROOT}/{collection['subfolder']}/<aoi>/")
     print("=" * 60)
 
     print("\nNASA Earthdata Login...")
@@ -322,7 +320,7 @@ def run(collection: dict):
         earthaccess.login(strategy="interactive", persist=True)
     print("NASA Login OK")
 
-    print(f"\nOpening tile store ({store_kind})...")
+    print("\nOpening tile store...")
     store = get_store()
     print("Store ready")
 

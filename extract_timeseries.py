@@ -2,7 +2,7 @@
 FROM SNOW TO RESERVOIR - Time Series Extraction
 Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
-Reads clipped GeoTIFFs from Google Drive and computes per-date area statistics.
+Reads clipped GeoTIFFs from the tile store and computes per-date area statistics.
 Requires RGI v7 Region 12 shapefile in static_data/ for glacier stats.
 Run download_glaciers.py first to fetch the shapefile.
 
@@ -21,7 +21,6 @@ Usage:
     python extract_timeseries.py
 """
 
-import os
 import re
 import csv
 import json
@@ -35,7 +34,7 @@ from rasterio.enums import Resampling
 import rioxarray  # noqa: F401  (registers the .rio accessor)
 from rioxarray.merge import merge_arrays
 import geopandas as gpd
-# Tile storage backend (Google Drive by default, local dir for headless CI).
+# Local tile store (filesystem under PIPELINE_LOCAL_DIR).
 from storage import get_store, ROOT
 
 try:
@@ -49,10 +48,10 @@ except ImportError:
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-# AOI definition (clip_box + s1_anchor) and DRIVE_PARENT live in aoi_config.py.
+# AOI definition (clip_box + s1_anchor) and DATA_ROOT live in aoi_config.py.
 # s1_anchor = one date (YYYYMMDD) of the chosen Sentinel-1 relative orbit; the S1
 # section below keeps ONLY dates sharing this orbit's 12-day phase (orbit_phase).
-from aoi_config import AOIS, AOI_1, AOI_2, DRIVE_PARENT, CATCHMENTS_GEOJSON  # noqa: F401
+from aoi_config import AOIS, AOI_1, AOI_2, DATA_ROOT, CATCHMENTS_GEOJSON  # noqa: F401
 
 NODATA          = 255
 WATER_VALUES    = {1, 2, 3, 4, 5}
@@ -438,7 +437,7 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
 # ─────────────────────────────────────────────
 # PER-DATE CACHE (resume across runs)
 # ─────────────────────────────────────────────
-# Computing a date means downloading + mosaicking tiles from Drive (the slow
+# Computing a date means reading + mosaicking tiles from the store (the slow
 # part). We cache the per-date result - including skipped dates and the reason -
 # so re-runs only touch dates not seen before. Pass refresh=True to recompute.
 
@@ -458,11 +457,11 @@ def save_cache(name: str, cache: dict):
 
 
 def _needs_recompute(entry: dict, sensor: str) -> bool:
-    """For --recompute: does this cached date need a fresh Drive read+compute, or
+    """For --recompute: does this cached date need a fresh store read+compute, or
     can we trust its cached skip decision? We only re-read dates that produce (or
     would now produce) an output row - 'ok' dates and dates that newly pass the
     CURRENT thresholds. Cloud skips and genuine below-threshold partials are kept
-    as-is (no expensive Drive read), since they never contribute a row."""
+    as-is (no expensive store read), since they never contribute a row."""
     if entry.get("status") == "ok":
         return True
     reason = entry.get("reason")
@@ -477,7 +476,7 @@ def _needs_recompute(entry: dict, sensor: str) -> bool:
 def prepare_cache(name: str, sensor: str, refresh: bool, recompute: bool) -> dict:
     """Cache to start the run from. --refresh wipes it (full recompute). --recompute
     keeps it but drops the entries that need a fresh read (ok / now-qualifying), so
-    those get reprocessed while known-skip dates are never read from Drive again."""
+    those get reprocessed while known-skip dates are never read from the store again."""
     if refresh:
         return {}
     cache = load_cache(name)
@@ -485,7 +484,7 @@ def prepare_cache(name: str, sensor: str, refresh: bool, recompute: bool) -> dic
         before = len(cache)
         cache = {d: e for d, e in cache.items() if not _needs_recompute(e, sensor)}
         print(f"  recompute: re-reading {before - len(cache)} dates, "
-              f"keeping {len(cache)} cached skip-decisions (no Drive read)")
+              f"keeping {len(cache)} cached skip-decisions (no store read)")
     return cache
 
 
@@ -542,7 +541,6 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
 def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
          recompute: bool = False):
     store = get_store()
-    print(f"Tile store: {os.environ.get('PIPELINE_STORE', 'drive')}")
 
     # ── RGI glacier data ─────────────────────
     print("\n--- RGI v7 Glacier Data ---")
@@ -556,10 +554,10 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
         else:
             glacier_masks[aoi["name"]] = None
 
-    # Parent OPERA_DSWx folder holding hls/ and s1/
-    opera_root = store.get_folder_id(DRIVE_PARENT, ROOT)
+    # Top-level OPERA_DSWx folder holding hls/ and s1/
+    opera_root = store.get_folder_id(DATA_ROOT, ROOT)
     if not opera_root:
-        print(f"  '{DRIVE_PARENT}' folder not found - run download_hls.py / download_s1.py first")
+        print(f"  '{DATA_ROOT}' folder not found - run download_hls.py / download_s1.py first")
         return
 
     # ── DSWx-S1 ──────────────────────────────
@@ -759,7 +757,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Extract DSWx time series from Google Drive.")
+    parser = argparse.ArgumentParser(description="Extract DSWx time series from the tile store.")
     parser.add_argument("--skip-s1", action="store_true", help="skip the DSWx-S1 section")
     parser.add_argument("--skip-hls", action="store_true", help="skip the DSWx-HLS section")
     parser.add_argument("--refresh", action="store_true",
@@ -767,7 +765,7 @@ if __name__ == "__main__":
     parser.add_argument("--recompute", action="store_true",
                         help="reprocess only 'ok' / now-qualifying dates; keep cached "
                              "skip decisions (cloud / below-threshold) without re-reading "
-                             "them from Drive - much faster after a logic/threshold change")
+                             "them from the store - much faster after a logic/threshold change")
     args = parser.parse_args()
     main(skip_s1=args.skip_s1, skip_hls=args.skip_hls,
          refresh=args.refresh, recompute=args.recompute)

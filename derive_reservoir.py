@@ -34,13 +34,13 @@ from scipy import ndimage
 from rasterio.features import shapes as rio_shapes, rasterize
 from rasterio.enums import Resampling
 
-# Reuse the proven Drive + mosaic machinery from the extraction pipeline.
+# Reuse the proven store + mosaic machinery from the extraction pipeline.
 from extract_timeseries import (
     parse_filename, mosaic_tiles,
     NODATA, WATER_VALUES, MIN_TILES, S1_FULL_COVER_PCT,
-    STATIC_DIR, DRIVE_PARENT, AOI_1, AOI_2,
+    STATIC_DIR, DATA_ROOT, AOI_1, AOI_2,
 )
-# Tile storage backend (Google Drive by default, local dir for headless CI).
+# Local tile store (filesystem under PIPELINE_LOCAL_DIR).
 from storage import get_store, ROOT
 
 # ─────────────────────────────────────────────
@@ -230,9 +230,9 @@ def main():
     print("=" * 55)
 
     store = get_store()
-    opera_root = store.get_folder_id(DRIVE_PARENT, ROOT)
+    opera_root = store.get_folder_id(DATA_ROOT, ROOT)
     if not opera_root:
-        print(f"'{DRIVE_PARENT}' folder not found - run download_s1.py first")
+        print(f"'{DATA_ROOT}' folder not found - run download_s1.py first")
         return
     s1_root = store.get_folder_id("s1", opera_root)
     if not s1_root:

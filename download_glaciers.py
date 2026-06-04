@@ -41,7 +41,7 @@ RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
 
 def download_rgi() -> Path | None:
     """Download and unpack RGI v7 Region 12 from NSIDC.
-    Uses NASA Earthdata credentials (same account as download_to_drive.py).
+    Uses NASA Earthdata credentials (same account as the download scripts).
     Returns path to .shp file or None on failure.
     """
     STATIC_DIR.mkdir(exist_ok=True)

@@ -5,7 +5,6 @@
 earthaccess
 rioxarray
 rasterio
-pydrive2
 tqdm
 python-dotenv
 numpy
