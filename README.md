@@ -3,6 +3,8 @@
 
 © Sebastian Macherey, [github.com/sebastianmry/from-snow-to-reservoir](https://github.com/sebastianmry/from-snow-to-reservoir)
 
+**Live app: [from-snow-to-reservoir.streamlit.app](https://from-snow-to-reservoir.streamlit.app/)**
+
 ---
 
 ## Motivation

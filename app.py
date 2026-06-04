@@ -717,7 +717,6 @@ def chart_snow(df: pd.DataFrame) -> go.Figure:
 
 st.set_page_config(
     page_title="From Snow to Reservoir",
-    page_icon="🏔",
     layout="wide",
 )
 
@@ -746,7 +745,6 @@ if is_mock_hls or is_mock_s1:
     st.warning(
         "Parquet file(s) not present yet, so the dashboard shows partly synthetic "
         "demo data. Run extract_timeseries.py for real values.",
-        icon="⏳",
     )
 
 # Date range slider (spanning both series)
@@ -936,4 +934,21 @@ with st.expander("Show raw data"):
     st.dataframe(
         df_hls_view.sort_values("date", ascending=False).reset_index(drop=True),
         width="stretch", hide_index=True,
+    )
+
+# ── About ─────────────────────────────────────
+with st.expander("About this project"):
+    st.caption(
+        "This dashboard tracks the snow to glacier to reservoir water chain above "
+        "two Georgian hydropower dams (Enguri and Zhinvali) from open satellite "
+        "data. Reservoir and water area come from Sentinel-1 radar (DSWx-S1, cloud "
+        "independent); seasonal snow and glacier cover come from optical HLS "
+        "(DSWx-HLS). Statistics are masked to each dam's upstream catchment "
+        "(HydroBASINS). Built for the course Automatisierte Geodatenprozessierung."
+    )
+    st.markdown(
+        "Live app: [from-snow-to-reservoir.streamlit.app]"
+        "(https://from-snow-to-reservoir.streamlit.app/)  \n"
+        "Source and methodology: [GitHub]"
+        "(https://github.com/sebastianmry/from-snow-to-reservoir)"
     )
