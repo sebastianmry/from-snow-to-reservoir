@@ -388,6 +388,13 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # Fit exactly to the AOI so it is always centered regardless of AOI size
     fmap.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
+    # Load Montserrat so the on-map reservoir label matches the CartoDB Positron
+    # basemap typography (its place labels use the Montserrat family).
+    fmap.get_root().header.add_child(folium.Element(
+        '<link href="https://fonts.googleapis.com/css2?'
+        'family=Montserrat:wght@500;600&display=swap" rel="stylesheet">'
+    ))
+
     # Reservoir centre for placing the reservoir-name label on the lake itself.
     res_label_anchor = None
     if reservoir is not None and not reservoir.empty:
@@ -489,13 +496,17 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             folium.Marker(
                 location=list(anchor),
                 icon=folium.DivIcon(
-                    icon_size=(90, 18),
-                    icon_anchor=(45, 9),
+                    icon_size=(150, 18),
+                    icon_anchor=(75, 9),
                     html=(
-                        '<div style="font-size:11px;font-weight:600;color:#1a5276;'
-                        'background:rgba(255,255,255,0.65);border-radius:3px;'
-                        'text-align:center;white-space:nowrap;font-style:italic;">'
-                        f'{name}</div>'
+                        # Plain label, no background box: a white text halo keeps
+                        # it legible over the blue reservoir fill instead.
+                        '<div style="font-size:9px;font-weight:600;color:#000000;'
+                        "font-family:'Montserrat','Helvetica Neue',Arial,sans-serif;"
+                        'text-align:center;white-space:nowrap;'
+                        'text-shadow:-1px -1px 1px #fff, 1px -1px 1px #fff, '
+                        '-1px 1px 1px #fff, 1px 1px 1px #fff;">'
+                        f'{name} Reservoir</div>'
                     ),
                 ),
             ).add_to(fmap)

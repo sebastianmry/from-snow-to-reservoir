@@ -306,6 +306,12 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   weiterhin `use_container_width` - das ist der EIGENE Parameter der streamlit-folium-Komponente
   (kein deprecateter Streamlit-Core-Parameter), `width` erwartet dort einen Pixel-Integer. Also
   korrekt so, kein offener Punkt.
+- **Stausee-Label-Styling (2026-06-04):** Das persistente On-Map-Label heisst jetzt
+  "{Name} Reservoir" (englischer Zusatz), schwarz, 9px, font-weight 600, KEIN Hintergrund-
+  Kasten und nicht kursiv mehr - stattdessen weisser Text-Halo (text-shadow) fuer Lesbarkeit
+  auf der blauen Seeflaeche. font-family Montserrat (via Google-Fonts-Link im Karten-Header
+  geladen, Helvetica/Arial-Fallback), passend zur CartoDB-Positron-Basemap-Typografie.
+  DivIcon-Box auf 150px verbreitert, damit der laengere Text mittig bleibt.
 
 ### Wasserpegel (DEM/INFLOS) - GETESTET und VERWORFEN (2026-06-01)
 Der INFLOS-Pegelansatz (S1-Uferlinie x Copernicus DEM GLO-30) wurde implementiert,
