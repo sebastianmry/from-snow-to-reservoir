@@ -5,14 +5,14 @@ Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 Every script (download_*, extract_timeseries, derive_reservoir, app) imports its
 AOI definition from here, so the bounding box / clip box lives in exactly ONE
 place. The clip_box is the rectangle actually sent to the satellite clip; it is
-derived from the catchment (Einzugsgebiet) above each dam (see
+derived from the catchment above each dam (see
 download_catchments.py) plus a small buffer. The catchment POLYGON itself lives
 in static_data/catchments.geojson and is used to mask the analysis statistics
 (extract_timeseries.py) so that snow/glacier/water are counted only inside the
 reservoir's drainage basin.
 
 Per-AOI fields:
-  name        - short site key, also the Drive subfolder name
+  name        - short site key, also the per-site subfolder name in the store
   label       - long descriptive label (download logs)
   dam         - (lon, lat) of the dam = catchment pour-point / reservoir outlet
   clip_box    - (min_lon, min_lat, max_lon, max_lat) box for download + clip
@@ -27,14 +27,14 @@ from pathlib import Path
 STATIC_DIR = Path("static_data")
 CATCHMENTS_GEOJSON = STATIC_DIR / "catchments.geojson"
 
-# Parent folder in Google Drive holding the hls/ and s1/ subfolders
-DRIVE_PARENT = "OPERA_DSWx"
+# Top-level folder in the tile store holding the hls/ and s1/ subfolders
+DATA_ROOT = "OPERA_DSWx"
 
 # Canonical AOI table, keyed by site name.
 AOIS = {
     "enguri": {
         "name": "enguri",
-        "label": "Enguri Talsperre + Svaneti",
+        "label": "Enguri Reservoir + Svaneti",
         "dam": (42.032, 42.753),
         # Catchment above the dam (HydroBASINS lev12, 3139 km2) + 0.02 deg buffer.
         # Replaces the old coarse box (41.70,42.55,42.80,43.15) which cut off the
@@ -51,12 +51,12 @@ AOIS = {
         "s1_anchor": "20240829",
         "display_label": "Enguri (Western Georgia)",
         "center": (42.884, 42.753),
-        "dam_label": "Enguri-Staudamm (271 m)",
+        "dam_label": "Enguri Dam (271 m)",
         "zoom": 9,
     },
     "zhinvali": {
         "name": "zhinvali",
-        "label": "Zhinvali Talsperre + Gergeti",
+        "label": "Zhinvali Reservoir + Gergeti",
         "dam": (44.771, 42.133),
         # Catchment above the dam (HydroBASINS lev12, 2089 km2) + 0.02 deg buffer.
         # Excludes the Kazbek/Gergeti glaciers (drain north into the Terek, not
@@ -65,14 +65,14 @@ AOIS = {
         "s1_anchor": "20240825",
         "display_label": "Zhinvali (Eastern Georgia)",
         "center": (44.725, 42.40),
-        "dam_label": "Zhinvali-Staudamm",
+        "dam_label": "Zhinvali Dam",
         "zoom": 9,
     },
 }
 
 # bbox (used by earthaccess search + footprint pre-filter) equals the clip_box.
-for _a in AOIS.values():
-    _a["bbox"] = _a["clip_box"]
+for aoi in AOIS.values():
+    aoi["bbox"] = aoi["clip_box"]
 
 # Convenience views
 AOI_LIST = [AOIS["enguri"], AOIS["zhinvali"]]

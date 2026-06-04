@@ -32,7 +32,7 @@ Zentrale Definition in `aoi_config.py` (Single Source of Truth, alle Skripte imp
 - **Aufteilung:** Zwei schlanke Start-Skripte (HLS optisch, S1 Radar); gemeinsame Logik in `download_common.py` (nie direkt ausgefuehrt).
 - **Quelle:** NASA OPERA DSWx Produkte via `earthaccess`. HLS laedt `B01_WTR` + `B09_CLOUD`, S1 laedt `B01_WTR`.
 - **Footprint-Vorfilter:** Pro Datum wird die Vereinigung der Kachel-Footprints gegen das AOI geprueft; nur Tage mit >= 99% AOI-Abdeckung werden ueberhaupt heruntergeladen (`FOOTPRINT_MIN_COVER`). Spart Bandbreite, reine Geometrie-Rechnung.
-- **Drive-Struktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`. Dateinamen mit MGRS-Kachel-ID.
+- **Store-Struktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/`. Dateinamen mit MGRS-Kachel-ID.
 - **Eigenschaften:** Exponential Backoff bei Verbindungsabbruechen, `MAX_WORKERS = 2` (RAM-Schonung), Resume-Logik via Dateiname-Vergleich (paginiert).
 
 ### Stufe 2: `extract_timeseries.py` (Wissenschaftliche Auswertung)
@@ -69,7 +69,7 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   ~30 Min. `--refresh` ignoriert den Cache. `--skip-s1` / `--skip-hls` fuer Teil-Laeufe.
 - **Vorfilter:** `MIN_TILES = 2` ueberspringt Einzelkachel-Tage vor dem Download (decken die
   zonenuebergreifende AOI nie ab).
-- **Output-Dateien (lokal, NICHT im Drive):**
+- **Output-Dateien (lokal, NICHT im Tile-Store):**
   * HLS: `{site}_timeseries.csv/.parquet` (water, snow, glacier, cloud, valid_px_pct)
   * S1:  `{site}_s1_timeseries.csv/.parquet` (water_km2, valid_px_pct)
 
@@ -110,7 +110,7 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
 
 ## 3. Aktueller Bearbeitungsstand (Stand: 2026-06-02)
 
-- **Stufe 1 fertig:** HLS + S1 Download Enguri + Zhinvali komplett im Drive (MGRS-getaggt).
+- **Stufe 1 fertig:** HLS + S1 Download Enguri + Zhinvali komplett im Store (MGRS-getaggt).
 - **Stufe 2 fertig:** HLS- UND S1-Zeitreihen berechnet. Coverage-Bug (Mosaik-Clip) gefixt,
   Wolkenmaske auf WTR-253 umgestellt, S1 mit Orbit-Dedup (ein Track, ~12 Tage). Per-Datum-
   Cache eingebaut. Arbeitsteilung: Wasser=S1, Schnee=HLS (siehe Abschnitt oben).
@@ -161,7 +161,7 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   2/4/8/16/32s, RETRYABLE_STATUS={429,500,502,503,504}. probe_coverage.py Stufe B nutzt dieselbe
   requests-Session. Erfahrung Re-Download: PODAAC wirft sporadisch 5xx (transient -> Resume-Lauf
   holt sie nach) + vereinzelt 404 (zurueckgezogene/reprozessierte Granules -> bleiben weg, ok).
-  Resume-sicher: download_*.py erneut starten ueberspringt vorhandene Drive-Dateien.
+  Resume-sicher: download_*.py erneut starten ueberspringt vorhandene Store-Dateien.
 - **Datenstand Re-Download (laufend):** S1 fertig (Enguri 204 Dateien/51 Tage, Zhinvali 272/53,
   0 Fehler). HLS laeuft (Enguri 1053/1059, 6 uebrig: 5x 502 transient + 1x 404). Danach
   Resume-Lauf fuer die 502er, dann derive_reservoir + extract_timeseries --refresh.
@@ -170,7 +170,7 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   CATCHMENT-relativ (Nenner = Catchment-Pixel, sonst würde die große Box alles unter die
   90/95%-Schwelle drücken). Backward-kompatibel (ohne catchments.geojson exakt altes Verhalten).
   app.py: Catchment-Kontur statt bbox auf der Karte. AppTest beide AOIs 0 Exceptions.
-- **Schritte 4/5 (AUSSTEHEND, User fährt selbst):** (a) Drive `OPERA_DSWx/{hls,s1}/{enguri,
+- **Schritte 4/5 (AUSSTEHEND, User fährt selbst):** (a) Store `OPERA_DSWx/{hls,s1}/{enguri,
   zhinvali}/` manuell leeren (alte Clips passen nicht zur neuen Box; KEIN Lösch-Skript im Repo),
   (b) download_s1.py + download_hls.py (neue MGRS-Kacheln), (c) derive_reservoir.py +
   extract_timeseries.py --refresh. Mehrstündig. Danach: reservoir_area_km2 + Schnee/Gletscher
@@ -202,7 +202,7 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   liefert die Robustheit, NaN-Tage = Lücke). Schnee-Chart/KPI nutzen seasonal_snow_km2_est.
 - **`--recompute` Flag (extract_timeseries):** liest nur ergebnisrelevante Tage neu (ok + unter
   AKTUELLEN Schwellen neu qualifizierende), übernimmt cloud-/unter-Schwelle-Skips MIT Stats aus
-  dem Cache ohne Drive-Read. Nach Logik-/Schwellen-Änderung viel schneller (zhinvali 50 statt 249).
+  dem Cache ohne Store-Read. Nach Logik-/Schwellen-Änderung viel schneller (zhinvali 50 statt 249).
   prepare_cache() + _needs_recompute(). NICHT --refresh nutzen, wenn nur Logik sich ändert!
 - **Download-Robustheit:** requests-Session statt fsspec, HTTP_TIMEOUT (10,60)s gegen Hänger,
   MAX_RETRIES 3, Retry für 429/5xx. PODAAC warf während des Re-Downloads viele transiente 502 +
@@ -230,7 +230,7 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
 ### Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau - CODE FERTIG (2026-06-03), Render-Lauf durch User ausstehend
 - `render_overlays.py` umgesetzt: laeuft EINMAL nach extract_timeseries.py, liest pro
   Sensor (s1/hls) die Datumsliste aus dem fertigen Parquet (Szenen = exakt die Charts),
-  laedt die Drive-Tiles, mosaikiert (mosaic_tiles), rechnet auf max 900 px herunter
+  laedt die Tiles aus dem Store, mosaikiert (mosaic_tiles), rechnet auf max 900 px herunter
   (MAX_DIM, nearest), faerbt ein und schreibt static_data/overlays/{site}/{sensor}/
   {YYYYMMDD}.png + bounds.json. Reuse aller extract_timeseries-Bausteine + Catchment-/
   RGI-Maske. Farben: Wasser blau, saisonaler Schnee weiss, Schnee-auf-Gletscher hellblau,
@@ -243,16 +243,16 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   Reservoir-Umriss). KEIN Rasterrechnen zur Laufzeit. Ohne gerenderte Overlays zeigt
   die Sektion einen Hinweis (AppTest verifiziert, 0 Exceptions). load_overlay_index /
   load_overlay_uri @st.cache_data.
-- AUSSTEHEND (User faehrt selbst): `python render_overlays.py` (Drive-Zugriff,
+- AUSSTEHEND (User faehrt selbst): `python render_overlays.py` (Store-Zugriff,
   mehrere Minuten). Danach PNGs ins Repo committen, damit Streamlit Cloud sie hat.
 - (urspruenglicher Plan, weiterhin gueltig) User-Wunsch: BEIDE Sensoren S1 (Wasser)
   UND HLS (Schnee/Eis), nicht nur S1.
 - Karte soll die eigentlichen GeoTIFFs anzeigen und gestylt darstellen, sodass man per Datums-Slider durch die Szenen blaettern und die Veraenderungen ueber die Zeit sehen kann (Schnee/Eis/Wasser im Jahresverlauf).
-- ANGEREICHERTE Version: `B01_WTR` (Mosaik) pro gewaehltem Datum aus Drive laden, live mit RGI-Maske verschneiden, einfaerben:
+- ANGEREICHERTE Version: `B01_WTR` (Mosaik) pro gewaehltem Datum aus dem Store laden, live mit RGI-Maske verschneiden, einfaerben:
   Wasser (1-5) = blau, saisonaler Schnee = weiss, Schnee-auf-Gletscher = hellblau, blankes Gletschereis = tuerkis/grau.
 - Als Folium `ImageOverlay` auf die Karte legen; Datums-Auswahl steuert das gezeigte Raster.
 
-**Implementierungs-Ansatz (Stabilitaet):** Vorrendern statt live rechnen. Ein separates `render_overlays.py` (laeuft einmal nach `extract_timeseries.py`) erzeugt pro gefiltertem Datum ein kleines, eingefaerbtes PNG nach `static_data/overlays/{aoi}/{date}.png` (+ Bounds-Sidecar). Die App laedt nur fertige PNGs via `folium.ImageOverlay` - kein Rasterrechnen zur Laufzeit, stabil und fluessig durchblaetterbar. Hebel: Aufloesung reduzieren, nur gefilterte Tage rendern, `@st.cache_data`, batch-weise mit Speicherfreigabe, PNGs lokal (kein Drive-Zugriff zur Laufzeit).
+**Implementierungs-Ansatz (Stabilitaet):** Vorrendern statt live rechnen. Ein separates `render_overlays.py` (laeuft einmal nach `extract_timeseries.py`) erzeugt pro gefiltertem Datum ein kleines, eingefaerbtes PNG nach `static_data/overlays/{aoi}/{date}.png` (+ Bounds-Sidecar). Die App laedt nur fertige PNGs via `folium.ImageOverlay` - kein Rasterrechnen zur Laufzeit, stabil und fluessig durchblaetterbar. Hebel: Aufloesung reduzieren, nur gefilterte Tage rendern, `@st.cache_data`, batch-weise mit Speicherfreigabe, PNGs lokal (kein Store-Zugriff zur Laufzeit).
 
 ### Reservoir-Polygone + Fuellwerte (CODE FERTIG, Lauf ausstehend)
 - **Problem geklaert:** HydroLAKES sitzt zwar korrekt am Damm (Enguri 0,58 km, Zhinvali
@@ -267,7 +267,7 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   HydroLAKES-Seed (+ Damm-Pixel) verbundene Komponente behalten; Closing + fill_holes; ->
   Polygon nach `static_data/reservoirs.geojson` (+ `{site}_s1_waterfreq.tif` zum Sichtpruefen).
   Offline mit synthetischem Array getestet (verbundene Komponente korrekt, fremder Wasserkoerper
-  verworfen). ECHTER LAUF ueber Drive steht noch aus.
+  verworfen). ECHTER LAUF ueber den Store steht noch aus.
 - `download_reservoirs.py`: Output jetzt `reservoirs_hydrolakes.geojson` (nur noch SEED fuer
   derive_reservoir). CRS-Warnung gefixt (distance() auf UTM 38N statt geografisch).
 - `extract_timeseries.py`: `reservoir_area_km2` = S1-Wasserpixel (1-5) **innerhalb** des
@@ -332,19 +332,54 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
 - Saisonales Signal sichtbar: Zhinvali-Wasser faellt von ~48 km² (Herbst) auf ~28-35 km²
   (Fruehjahr) - echte Stausee-Absenkung, wolkenunabhaengig erfasst.
 
-### GEPLANT (Stufe 4): Auto-Updates / Deployment - OPTION A
-- GitHub Action taeglich: `download_to_drive.py` + `extract_timeseries.py`, Parquets auto-committen.
-- GitHub Secrets fuer NASA + Google Drive credentials.
-- Streamlit Cloud verbunden mit Repo, oeffentliche URL fuer die Doku.
+### ERLEDIGT (Stufe 4): Deployment + Auto-Updates
+- **Live:** Streamlit Community Cloud, https://from-snow-to-reservoir.streamlit.app/
+  (repo public, branch main, `app.py`). App liest zur Laufzeit NUR lokale Dateien
+  (Parquets, GeoJSONs, RGI-Shapefile, Overlay-PNGs), daher KEINE Secrets in der Cloud.
+- **Repo self-contained:** `.gitignore` ist ignore-all-then-un-ignore. Die ~12 MB
+  Runtime-Artefakte sind eingecheckt, die 2.7 GB Rohdaten (HydroLAKES/RIVERS/BASINS)
+  bleiben draussen. `requirements.txt` = schlanke App-Deps (Cloud), `requirements-pipeline.txt`
+  = volle Pipeline-Deps. requirements.txt ist auf exakte Versionen GEPINNT (Stand der
+  lokalen georgia-sar-Env) -> reproduzierbarer Cloud-Build, kein stiller Drift.
+- **Python-Versionen (bewusst getrennt):** lokal Pipeline = 3.11 (conda georgia-sar),
+  Cloud-App = 3.13/3.14 (in den Streamlit-Settings waehlbar). Kein Konflikt: die beiden
+  Laufzeiten teilen sich nichts ausser versionsneutralen Datendateien (Parquet/GeoJSON/PNG).
+  Der App-Code ist vorwaertskompatibel; einziges Restrisiko waere ein fehlendes Wheel fuer
+  eine sehr neue Cloud-Python-Version (dann Python in den Settings auf 3.13 stellen).
+- **Tile-Store (`storage.py`):** EIN lokaler Filesystem-Store (`LocalStore`, Ordner unter
+  `PIPELINE_LOCAL_DIR`, Default `./opera_local`, keine Cloud-Auth -> laeuft headless lokal
+  UND in CI gleich). Die frueher in download_common/extract_timeseries duplizierten
+  Speicher-Helfer sind hier zentralisiert; download/extract/render/derive_reservoir laufen
+  ueber das Store-Objekt (`ensure_folder`/`get_folder_id`/`existing_names`/`list_tifs`/
+  `write`/`read_bytes`).
+- **Auto-Update (`.github/workflows/update-data.yml`):** woechentlich (Mo 03:00 UTC) +
+  manueller Dispatch: download -> extract -> render, dann
+  werden geaenderte Parquets + Overlay-PNGs zurueck committet -> Streamlit re-deployt.
+  Tiles liegen in `runner.temp` (nie committet); ein `actions/cache` von Tile-Store und
+  Per-Date-Cache haelt die Laeufe inkrementell. Einziges Secret: `EARTHDATA_USERNAME` /
+  `EARTHDATA_PASSWORD`. `search_granules()` retryt CMR-5xx (NASA-seitige transiente
+  Fehler) 3x mit Backoff.
+
+### ERLEDIGT: Code-/Doku-Qualitaetspass (2026-06-04)
+- **Coding-Styleguide ueber alle 13 Skripte** angewandt: explizite Namen (kein bare
+  df/gdf/res/data, keine Einzelbuchstaben-Loops), Imports am Modulkopf, pathlib fuers
+  File-Open, tote Imports raus. Verhalten unveraendert (aoi_config-SSOT, Sensor-Trennung,
+  Reservoir-Guard, Pre-Render-UI bleiben), verifiziert per Import + Streamlit-AppTest
+  (0 Exceptions). Etablierte Akronyme `wtr` (Bandname B01_WTR) und `rgba` bewusst behalten.
+- **Text-Styleguide** auf die Prosa angewandt: README-Komposita korrekt mit Bindestrich
+  (radar-based, cloud-independent, sub-basin, catchment-relative ...), keine en/em-Dashes.
+  App-About: Kursname englisch ("Automated Geospatial Data Processing").
+- **Aufgeraeumt:** Roh-Geodaten (HydroBASINS/LAKES/RIVERS, ~2.7 GB) lokal geloescht; nur
+  committete abgeleitete Outputs + RGI-Shapefile bleiben. download_*-Skripte holen die
+  Rohdaten bei Bedarf neu.
 
 ### Mosaik-Refactor (umgesetzt)
 - **Problem:** Bei Zhinvali liegen Stausee (Lat 42.13, Sued) und Gletscher (Lat 42.52+, Nord) in verschiedenen MGRS-Kacheln. Der alte `reservoir_is_covered`-Filter lud nur Sued-Kacheln -> Gletscherwerte komplett 0. Enguri war ok (Stausee+Gletscher in denselben Kacheln).
-- **Loesung:** `download_to_drive.py` taggt Dateinamen mit MGRS-Kachel-ID und laedt ALLE AOI-Kacheln (kein reservoir-Filter). `extract_timeseries.py` merged pro Datum alle Kacheln zu einem EPSG:4326-Mosaik (volle AOI), berechnet Statistiken darauf. Loest auch das Wasser-Rauschen.
-- **Achtung:** Dateinamen-Aenderung erfordert vollstaendigen Re-Download. Alte HLS-Dateien (ohne MGRS) ggf. vorher im Drive loeschen.
+- **Loesung:** Die Download-Skripte taggen Dateinamen mit MGRS-Kachel-ID und laden ALLE AOI-Kacheln (kein reservoir-Filter). `extract_timeseries.py` merged pro Datum alle Kacheln zu einem EPSG:4326-Mosaik (volle AOI), berechnet Statistiken darauf. Loest auch das Wasser-Rauschen.
+- **Achtung:** Dateinamen-Aenderung erfordert vollstaendigen Re-Download. Alte HLS-Dateien (ohne MGRS) ggf. vorher im Store loeschen.
 
 ### Bekannte Eigenheiten
-- **Drive-Ordnerstruktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/` (Parent-Ordner `DRIVE_PARENT = "OPERA_DSWx"`). Sowohl Download-Skripte als auch `extract_timeseries.py` nutzen diesen Parent.
-- **Drive-Pagination:** `get_existing_filenames` nutzt `maxResults=1000` gegen das 100-Datei-Limit der API.
+- **Store-Ordnerstruktur:** `OPERA_DSWx/{hls,s1}/{enguri,zhinvali}/` (Top-Level `DATA_ROOT = "OPERA_DSWx"` in aoi_config.py). Sowohl Download-Skripte als auch `extract_timeseries.py` / `render_overlays.py` / `derive_reservoir.py` nutzen diesen Root.
 
 ---
 
@@ -352,8 +387,7 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
 - `earthaccess` — NASA Granule-Suche und Download
 - `rioxarray` / `rasterio` — In-Memory Rasterverarbeitung und Clipping
 - `geopandas` — RGI Vektordaten laden und auf AOI zuschneiden
-- `pydrive2` — Google Drive Upload/Download
 - `pandas` / `pyarrow` — Parquet-Output fuer Streamlit
 - `tqdm` — Fortschrittsanzeige
+- Tile-Store: lokales Filesystem unter `PIPELINE_LOCAL_DIR` (Default `./opera_local`)
 - Conda-Environment: `georgia-sar`
-- Google Drive Root Folder ID: `1EdYn2RbULuEYj8dnPbK9Zshia6G50ssE`

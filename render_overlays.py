@@ -4,8 +4,8 @@ Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Pre-renders the DSWx scenes as small, coloured PNG overlays so the dashboard can
 step through them on a date slider WITHOUT doing any raster work at runtime (the
-laptop is weak, the TIFs are large and Drive is slow). All the heavy lifting -
-download from Drive, mosaic, classify, downsample - happens once here; the app
+laptop is weak and the TIFs are large). All the heavy lifting -
+read from the store, mosaic, classify, downsample - happens once here; the app
 only loads finished PNGs via folium.ImageOverlay.
 
 For each AOI and sensor it renders exactly the dates that made it into the final
@@ -44,11 +44,12 @@ from rasterio.enums import Resampling
 
 from aoi_config import AOIS, AOI_1, AOI_2
 from extract_timeseries import (
-    authenticate, get_folder_id, list_tifs_in_folder, read_bytes,
     parse_filename, mosaic_tiles, load_catchment, load_glacier_mask,
     find_rgi, rasterize_glaciers,
-    NODATA, WATER_VALUES, SNOW_VALUE, CLOUD_WTR_VALUE, DRIVE_PARENT,
+    NODATA, WATER_VALUES, SNOW_VALUE, CLOUD_WTR_VALUE, DATA_ROOT,
 )
+# Local tile store (filesystem under PIPELINE_LOCAL_DIR).
+from storage import get_store, ROOT
 
 OVERLAY_DIR = Path("static_data") / "overlays"
 SENSORS     = ["s1", "hls"]
@@ -72,45 +73,46 @@ def _parquet_dates(site: str, sensor: str) -> list[str]:
     """The dates (YYYYMMDD) that made it into the final timeseries - so the
     overlays line up exactly with what the charts show (dedup already applied)."""
     stem = f"{site}_s1_timeseries" if sensor == "s1" else f"{site}_timeseries"
-    pq = Path(f"{stem}.parquet")
-    if not pq.exists():
-        print(f"  no {pq} - run extract_timeseries.py first; skipping {site}/{sensor}")
+    parquet_path = Path(f"{stem}.parquet")
+    if not parquet_path.exists():
+        print(f"  no {parquet_path} - run extract_timeseries.py first; skipping {site}/{sensor}")
         return []
-    df = pd.read_parquet(pq)
-    return [pd.Timestamp(d).strftime("%Y%m%d") for d in df["date"]]
+    timeseries_df = pd.read_parquet(parquet_path)
+    return [pd.Timestamp(d).strftime("%Y%m%d") for d in timeseries_df["date"]]
 
 
-def _downsample(da):
+def _downsample(raster):
     """Reproject to a coarser grid (nearest, so class values stay intact) with the
     longer side capped at MAX_DIM. Bounds stay the AOI clip_box."""
-    _, h, w = da.shape
-    scale = min(1.0, MAX_DIM / max(h, w))
+    _, height, width = raster.shape
+    scale = min(1.0, MAX_DIM / max(height, width))
     if scale >= 1.0:
-        return da
-    new_h, new_w = max(1, int(h * scale)), max(1, int(w * scale))
-    return da.rio.reproject(da.rio.crs, shape=(new_h, new_w),
-                            resampling=Resampling.nearest, nodata=NODATA)
+        return raster
+    new_height, new_width = max(1, int(height * scale)), max(1, int(width * scale))
+    return raster.rio.reproject(raster.rio.crs, shape=(new_height, new_width),
+                                resampling=Resampling.nearest, nodata=NODATA)
 
 
-def _classify_s1(wtr: np.ndarray, catch: np.ndarray) -> np.ndarray:
+def _classify_s1(wtr: np.ndarray, catchment_mask: np.ndarray) -> np.ndarray:
     """RGBA image: water blue, everything else transparent."""
     rgba = np.zeros((*wtr.shape, 4), dtype=np.uint8)
-    water = np.isin(wtr, list(WATER_VALUES)) & catch
+    water = np.isin(wtr, list(WATER_VALUES)) & catchment_mask
     rgba[water] = C_WATER
     return rgba
 
 
-def _classify_hls(wtr: np.ndarray, catch: np.ndarray, glacier: np.ndarray) -> np.ndarray:
+def _classify_hls(wtr: np.ndarray, catchment_mask: np.ndarray,
+                  glacier_mask: np.ndarray) -> np.ndarray:
     """RGBA image: water / seasonal snow / snow-on-glacier / bare ice; cloud and
     NoData transparent; outside the catchment transparent."""
     rgba = np.zeros((*wtr.shape, 4), dtype=np.uint8)
-    usable = (wtr != NODATA) & (wtr != CLOUD_WTR_VALUE) & catch
+    usable = (wtr != NODATA) & (wtr != CLOUD_WTR_VALUE) & catchment_mask
 
     water         = np.isin(wtr, list(WATER_VALUES)) & usable
     snow          = (wtr == SNOW_VALUE) & usable
-    snow_seasonal = snow & ~glacier
-    snow_glacier  = snow & glacier
-    bare_ice      = glacier & usable & ~snow & ~water
+    snow_seasonal = snow & ~glacier_mask
+    snow_glacier  = snow & glacier_mask
+    bare_ice      = glacier_mask & usable & ~snow & ~water
 
     rgba[bare_ice]      = C_BARE_ICE
     rgba[snow_seasonal] = C_SNOW_SEASONAL
@@ -119,20 +121,20 @@ def _classify_hls(wtr: np.ndarray, catch: np.ndarray, glacier: np.ndarray) -> np
     return rgba
 
 
-def _list_wtr_by_date(drive, folder_id: str) -> dict[str, list]:
-    """Group the B01_WTR tiles in a Drive folder by acquisition date."""
+def _list_wtr_by_date(store, folder_id: str) -> dict[str, list]:
+    """Group the B01_WTR tiles in a store folder by acquisition date."""
     by_date: dict[str, list] = {}
-    for f in list_tifs_in_folder(drive, folder_id):
-        meta = parse_filename(f["title"])
-        if not meta:
+    for tile in store.list_tifs(folder_id):
+        parsed = parse_filename(tile["title"])
+        if not parsed:
             continue
-        _, date_str, layer = meta
+        _, date_str, layer = parsed
         if "B01_WTR" in layer:
-            by_date.setdefault(date_str, []).append(f)
+            by_date.setdefault(date_str, []).append(tile)
     return by_date
 
 
-def render_site_sensor(drive, aoi: dict, sensor: str, sensor_root: str,
+def render_site_sensor(store, aoi: dict, sensor: str, sensor_root: str,
                        refresh: bool):
     site = aoi["name"]
     dates = _parquet_dates(site, sensor)
@@ -145,11 +147,11 @@ def render_site_sensor(drive, aoi: dict, sensor: str, sensor_root: str,
     (out_dir / "bounds.json").write_text(json.dumps(
         {"bounds": [[min_lat, min_lon], [max_lat, max_lon]]}))
 
-    site_folder = get_folder_id(drive, site, sensor_root)
+    site_folder = store.get_folder_id(site, sensor_root)
     if not site_folder:
-        print(f"  Drive folder not found for {site}/{sensor} - skipping")
+        print(f"  Store folder not found for {site}/{sensor} - skipping")
         return
-    by_date = _list_wtr_by_date(drive, site_folder)
+    by_date = _list_wtr_by_date(store, site_folder)
 
     catchment = load_catchment(site)
     glaciers = None
@@ -159,60 +161,61 @@ def render_site_sensor(drive, aoi: dict, sensor: str, sensor_root: str,
 
     print(f"  {site}/{sensor}: {len(dates)} scenes to render")
     rendered = skipped = 0
-    for i, date_str in enumerate(dates, 1):
-        png = out_dir / f"{date_str}.png"
-        if png.exists() and not refresh:
+    for index, date_str in enumerate(dates, 1):
+        png_path = out_dir / f"{date_str}.png"
+        if png_path.exists() and not refresh:
             skipped += 1
             continue
         tiles = by_date.get(date_str)
         if not tiles:
-            print(f"  [{i:>3}/{len(dates)}] {date_str}: no tiles on Drive - skip")
+            print(f"  [{index:>3}/{len(dates)}] {date_str}: no tiles in store - skip")
             continue
         try:
-            mosaic = mosaic_tiles([read_bytes(f) for f in tiles], NODATA, aoi["clip_box"])
+            mosaic = mosaic_tiles([store.read_bytes(tile) for tile in tiles],
+                                  NODATA, aoi["clip_box"])
             if mosaic is None:
-                print(f"  [{i:>3}/{len(dates)}] {date_str}: no readable tiles - skip")
+                print(f"  [{index:>3}/{len(dates)}] {date_str}: no readable tiles - skip")
                 continue
             mosaic = _downsample(mosaic)
             wtr = mosaic.values[0]
-            catch = (rasterize_glaciers(catchment, mosaic.rio.crs,
-                                        mosaic.rio.transform(), wtr.shape)
-                     if catchment is not None and not catchment.empty
-                     else np.ones(wtr.shape, dtype=bool))
+            catchment_mask = (rasterize_glaciers(catchment, mosaic.rio.crs,
+                                                 mosaic.rio.transform(), wtr.shape)
+                              if catchment is not None and not catchment.empty
+                              else np.ones(wtr.shape, dtype=bool))
             if sensor == "s1":
-                rgba = _classify_s1(wtr, catch)
+                rgba = _classify_s1(wtr, catchment_mask)
             else:
-                glac = rasterize_glaciers(glaciers, mosaic.rio.crs,
-                                          mosaic.rio.transform(), wtr.shape)
-                rgba = _classify_hls(wtr, catch, glac)
-            Image.fromarray(rgba, "RGBA").save(png, optimize=True)
+                glacier_mask = rasterize_glaciers(glaciers, mosaic.rio.crs,
+                                                  mosaic.rio.transform(), wtr.shape)
+                rgba = _classify_hls(wtr, catchment_mask, glacier_mask)
+            Image.fromarray(rgba, "RGBA").save(png_path, optimize=True)
             rendered += 1
-            print(f"  [{i:>3}/{len(dates)}] {date_str}: {wtr.shape[1]}x{wtr.shape[0]} px -> {png.name}")
-        except Exception as e:
-            print(f"  [{i:>3}/{len(dates)}] {date_str}: ERROR {e}")
+            print(f"  [{index:>3}/{len(dates)}] {date_str}: "
+                  f"{wtr.shape[1]}x{wtr.shape[0]} px -> {png_path.name}")
+        except Exception as error:
+            print(f"  [{index:>3}/{len(dates)}] {date_str}: ERROR {error}")
     print(f"  {site}/{sensor}: {rendered} rendered, {skipped} already present")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Pre-render DSWx scenes as PNG overlays.")
-    ap.add_argument("filters", nargs="*",
-                    help="optional AOI (enguri/zhinvali) and/or sensor (s1/hls)")
-    ap.add_argument("--refresh", action="store_true",
-                    help="re-render PNGs that already exist")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description="Pre-render DSWx scenes as PNG overlays.")
+    parser.add_argument("filters", nargs="*",
+                        help="optional AOI (enguri/zhinvali) and/or sensor (s1/hls)")
+    parser.add_argument("--refresh", action="store_true",
+                        help="re-render PNGs that already exist")
+    args = parser.parse_args()
 
-    flt = [a.lower() for a in args.filters]
-    want_aoi    = next((a for a in flt if a in {x["name"] for x in AOIS.values()}), None)
-    want_sensor = next((a for a in flt if a in SENSORS), None)
+    filters = [token.lower() for token in args.filters]
+    want_aoi    = next((t for t in filters if t in {x["name"] for x in AOIS.values()}), None)
+    want_sensor = next((t for t in filters if t in SENSORS), None)
 
-    print("Authenticating with Google Drive...")
-    drive = authenticate()
-    opera_root = get_folder_id(drive, DRIVE_PARENT, "root")
+    store = get_store()
+    opera_root = store.get_folder_id(DATA_ROOT, ROOT)
     if not opera_root:
-        print(f"'{DRIVE_PARENT}' folder not found - run the download scripts first")
+        print(f"'{DATA_ROOT}' folder not found - run the download scripts first")
         sys.exit(1)
 
-    sensor_roots = {s: get_folder_id(drive, s, opera_root) for s in SENSORS}
+    sensor_roots = {sensor: store.get_folder_id(sensor, opera_root) for sensor in SENSORS}
 
     for aoi in [AOI_1, AOI_2]:
         if want_aoi and aoi["name"] != want_aoi:
@@ -221,11 +224,11 @@ def main():
         for sensor in SENSORS:
             if want_sensor and sensor != want_sensor:
                 continue
-            root = sensor_roots.get(sensor)
-            if not root:
-                print(f"  '{sensor}' folder not found under {DRIVE_PARENT} - skip")
+            sensor_root = sensor_roots.get(sensor)
+            if not sensor_root:
+                print(f"  '{sensor}' folder not found under {DATA_ROOT} - skip")
                 continue
-            render_site_sensor(drive, aoi, sensor, root, args.refresh)
+            render_site_sensor(store, aoi, sensor, sensor_root, args.refresh)
 
     print(f"\nDone. Overlays in {OVERLAY_DIR}/")
 

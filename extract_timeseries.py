@@ -2,7 +2,7 @@
 FROM SNOW TO RESERVOIR - Time Series Extraction
 Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
-Reads clipped GeoTIFFs from Google Drive and computes per-date area statistics.
+Reads clipped GeoTIFFs from the tile store and computes per-date area statistics.
 Requires RGI v7 Region 12 shapefile in static_data/ for glacier stats.
 Run download_glaciers.py first to fetch the shapefile.
 
@@ -14,7 +14,7 @@ Output per AOI:
   {site}_s1_timeseries.csv/.parquet   - water area from DSWx-S1 (AOI-wide +
                                         reservoir_area_km2 if reservoirs.geojson
                                         exists, see derive_reservoir.py)
-  {site}_hls_timeseries.csv/.parquet  - water + snow + glacier stats from DSWx-HLS
+  {site}_timeseries.csv/.parquet      - water + snow + glacier stats from DSWx-HLS
 
 Usage:
     python download_glaciers.py   # once, to fetch RGI shapefile
@@ -34,8 +34,8 @@ from rasterio.enums import Resampling
 import rioxarray  # noqa: F401  (registers the .rio accessor)
 from rioxarray.merge import merge_arrays
 import geopandas as gpd
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
+# Local tile store (filesystem under PIPELINE_LOCAL_DIR).
+from storage import get_store, ROOT
 
 try:
     import pandas as pd
@@ -48,10 +48,10 @@ except ImportError:
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-# AOI definition (clip_box + s1_anchor) and DRIVE_PARENT live in aoi_config.py.
+# AOI definition (clip_box + s1_anchor) and DATA_ROOT live in aoi_config.py.
 # s1_anchor = one date (YYYYMMDD) of the chosen Sentinel-1 relative orbit; the S1
 # section below keeps ONLY dates sharing this orbit's 12-day phase (orbit_phase).
-from aoi_config import AOIS, AOI_1, AOI_2, DRIVE_PARENT, CATCHMENTS_GEOJSON  # noqa: F401
+from aoi_config import AOIS, AOI_1, AOI_2, DATA_ROOT, CATCHMENTS_GEOJSON  # noqa: F401
 
 NODATA          = 255
 WATER_VALUES    = {1, 2, 3, 4, 5}
@@ -116,16 +116,16 @@ def load_glacier_mask(shp_path: Path, clip_box: tuple) -> gpd.GeoDataFrame | Non
     """Load RGI glaciers clipped to AOI bounding box."""
     min_lon, min_lat, max_lon, max_lat = clip_box
     try:
-        gdf = gpd.read_file(shp_path, bbox=(min_lon, min_lat, max_lon, max_lat))
-        if gdf.empty:
+        glaciers_gdf = gpd.read_file(shp_path, bbox=(min_lon, min_lat, max_lon, max_lat))
+        if glaciers_gdf.empty:
             print(f"  No glaciers found in AOI {clip_box}")
             return None
-        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        print(f"  {len(gdf)} glacier polygons loaded for AOI")
-        return gdf
-    except Exception as e:
-        print(f"  ERROR loading RGI: {e}")
+        if glaciers_gdf.crs is None or glaciers_gdf.crs.to_epsg() != 4326:
+            glaciers_gdf = glaciers_gdf.to_crs("EPSG:4326")
+        print(f"  {len(glaciers_gdf)} glacier polygons loaded for AOI")
+        return glaciers_gdf
+    except Exception as error:
+        print(f"  ERROR loading RGI: {error}")
         return None
 
 
@@ -134,34 +134,34 @@ def load_reservoir(site: str) -> gpd.GeoDataFrame | None:
     if not RESERVOIR_GEOJSON.exists():
         return None
     try:
-        gdf = gpd.read_file(RESERVOIR_GEOJSON)
-        gdf = gdf[gdf["aoi"] == site]
-        if gdf.empty:
+        reservoir_gdf = gpd.read_file(RESERVOIR_GEOJSON)
+        reservoir_gdf = reservoir_gdf[reservoir_gdf["aoi"] == site]
+        if reservoir_gdf.empty:
             return None
-        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        return gdf
-    except Exception as e:
-        print(f"  ERROR loading reservoir polygon: {e}")
+        if reservoir_gdf.crs is None or reservoir_gdf.crs.to_epsg() != 4326:
+            reservoir_gdf = reservoir_gdf.to_crs("EPSG:4326")
+        return reservoir_gdf
+    except Exception as error:
+        print(f"  ERROR loading reservoir polygon: {error}")
         return None
 
 
 def load_catchment(site: str) -> gpd.GeoDataFrame | None:
     """Load the HydroBASINS catchment polygon for one site (download_catchments.py).
     Used to mask the statistics to the reservoir's drainage basin so snow/glacier/
-    water are counted only inside the Einzugsgebiet."""
+    water are counted only inside the drainage basin."""
     if not CATCHMENTS_GEOJSON.exists():
         return None
     try:
-        gdf = gpd.read_file(CATCHMENTS_GEOJSON)
-        gdf = gdf[gdf["aoi"] == site]
-        if gdf.empty:
+        catchment_gdf = gpd.read_file(CATCHMENTS_GEOJSON)
+        catchment_gdf = catchment_gdf[catchment_gdf["aoi"] == site]
+        if catchment_gdf.empty:
             return None
-        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        return gdf
-    except Exception as e:
-        print(f"  ERROR loading catchment polygon: {e}")
+        if catchment_gdf.crs is None or catchment_gdf.crs.to_epsg() != 4326:
+            catchment_gdf = catchment_gdf.to_crs("EPSG:4326")
+        return catchment_gdf
+    except Exception as error:
+        print(f"  ERROR loading catchment polygon: {error}")
         return None
 
 
@@ -173,11 +173,11 @@ def rasterize_glaciers(glaciers: gpd.GeoDataFrame, src_crs, transform, shape: tu
     # Reproject to raster CRS if needed
     raster_epsg = src_crs.to_epsg() if src_crs else 4326
     if raster_epsg and raster_epsg != 4326:
-        gdf_proj = glaciers.to_crs(f"EPSG:{raster_epsg}")
+        glaciers_proj = glaciers.to_crs(f"EPSG:{raster_epsg}")
     else:
-        gdf_proj = glaciers
+        glaciers_proj = glaciers
 
-    geoms = [geom for geom in gdf_proj.geometry if geom is not None and geom.is_valid]
+    geoms = [geom for geom in glaciers_proj.geometry if geom is not None and geom.is_valid]
     if not geoms:
         return np.zeros(shape, dtype=bool)
 
@@ -201,44 +201,9 @@ def _catchment_mask(catchment: gpd.GeoDataFrame | None, wtr_da, shape: tuple) ->
                               wtr_da.rio.transform(), shape)
 
 
-# ─────────────────────────────────────────────
-# AUTH
-# ─────────────────────────────────────────────
-
-def authenticate() -> GoogleDrive:
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("gdrive_credentials.json")
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-    gauth.SaveCredentialsFile("gdrive_credentials.json")
-    return GoogleDrive(gauth)
-
-
-# ─────────────────────────────────────────────
-# DRIVE HELPERS
-# ─────────────────────────────────────────────
-
-def get_folder_id(drive: GoogleDrive, name: str, parent_id: str) -> str | None:
-    query = (
-        f"title='{name}' and mimeType='application/vnd.google-apps.folder' "
-        f"and '{parent_id}' in parents and trashed=false"
-    )
-    results = drive.ListFile({"q": query}).GetList()
-    return results[0]["id"] if results else None
-
-
-def list_tifs_in_folder(drive: GoogleDrive, folder_id: str) -> list[dict]:
-    return drive.ListFile(
-        {"q": f"'{folder_id}' in parents and trashed=false and title contains '.tif'"}
-    ).GetList()
-
-
-def read_bytes(drive_file) -> bytes:
-    return drive_file.GetContentIOBuffer().read()
+# Folder navigation, tile listing and byte reads go through the storage backend
+# (see storage.py): get_store(), store.get_folder_id(...), store.list_tifs(...),
+# store.read_bytes(f).
 
 
 # ─────────────────────────────────────────────
@@ -261,28 +226,28 @@ def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None,
     (which also includes rivers). This is the level-relevant signal and is
     far less noisy than the AOI total (no valley-floor speckle, orbit-robust)."""
     wtr = wtr_da.values[0]
-    px  = _pixel_size_km2_da(wtr_da)
+    pixel_km2 = _pixel_size_km2_da(wtr_da)
 
-    catch_mask = _catchment_mask(catchment, wtr_da, wtr.shape)
-    n_catch    = int(np.sum(catch_mask)) or wtr.size
+    catchment_mask = _catchment_mask(catchment, wtr_da, wtr.shape)
+    n_catchment    = int(np.sum(catchment_mask)) or wtr.size
 
-    valid      = (wtr != NODATA) & catch_mask
-    valid_pct  = float(np.sum(valid)) / n_catch * 100
-    water_mask = np.isin(wtr, list(WATER_VALUES)) & catch_mask
+    valid      = (wtr != NODATA) & catchment_mask
+    valid_pct  = float(np.sum(valid)) / n_catchment * 100
+    water_mask = np.isin(wtr, list(WATER_VALUES)) & catchment_mask
 
     stats = {
-        "water_km2":    float(np.sum(water_mask) * px),
+        "water_km2":    float(np.sum(water_mask) * pixel_km2),
         "valid_px_pct": round(valid_pct, 2),
     }
 
     if reservoir is not None and not reservoir.empty:
-        res_mask  = rasterize_glaciers(reservoir, wtr_da.rio.crs,
-                                       wtr_da.rio.transform(), wtr.shape)
-        n_res     = int(np.sum(res_mask))
-        res_valid = (wtr != NODATA) & res_mask
-        res_cov   = (float(np.sum(res_valid)) / n_res * 100) if n_res else 0.0
-        stats["reservoir_valid_pct"] = round(res_cov, 2)
-        if res_cov < RESERVOIR_MIN_COVER:
+        reservoir_mask  = rasterize_glaciers(reservoir, wtr_da.rio.crs,
+                                             wtr_da.rio.transform(), wtr.shape)
+        n_reservoir     = int(np.sum(reservoir_mask))
+        reservoir_valid = (wtr != NODATA) & reservoir_mask
+        reservoir_cover = (float(np.sum(reservoir_valid)) / n_reservoir * 100) if n_reservoir else 0.0
+        stats["reservoir_valid_pct"] = round(reservoir_cover, 2)
+        if reservoir_cover < RESERVOIR_MIN_COVER:
             # Lake itself under-observed this date -> a low area would be a false
             # drawdown. Report NaN for the reservoir AND for water_km2: the lake is
             # the dominant AOI water body, so the AOI-wide water count is unreliable
@@ -291,7 +256,7 @@ def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None,
             stats["reservoir_area_km2"] = float("nan")
             stats["water_km2"] = float("nan")
         else:
-            stats["reservoir_area_km2"] = float(np.sum(water_mask & res_mask) * px)
+            stats["reservoir_area_km2"] = float(np.sum(water_mask & reservoir_mask) * pixel_km2)
 
     return stats
 
@@ -300,9 +265,9 @@ def orbit_phase(date_str: str, anchor: str) -> int:
     """12-day repeat phase of a date relative to an anchor date (both YYYYMMDD).
     Dates of the same Sentinel-1 relative orbit share the same phase. Phase 0
     means the date sits on the anchor's orbit."""
-    d = datetime.strptime(date_str, "%Y%m%d").date().toordinal()
-    a = datetime.strptime(anchor, "%Y%m%d").date().toordinal()
-    return (d - a) % S1_REPEAT_DAYS
+    date_ordinal = datetime.strptime(date_str, "%Y%m%d").date().toordinal()
+    anchor_ordinal = datetime.strptime(anchor, "%Y%m%d").date().toordinal()
+    return (date_ordinal - anchor_ordinal) % S1_REPEAT_DAYS
 
 
 def dedup_single_orbit(rows: list[dict]) -> list[dict]:
@@ -325,24 +290,24 @@ def dedup_single_orbit(rows: list[dict]) -> list[dict]:
     #    Doing this before phase-grouping matters: with S1A+S1C, a partial and a
     #    full track can share the same 12-day phase, so filtering by phase median
     #    alone would still keep the partial scenes of the chosen phase.
-    rows = [r for r in rows if r["valid_px_pct"] >= S1_FULL_COVER_PCT]
+    rows = [row for row in rows if row["valid_px_pct"] >= S1_FULL_COVER_PCT]
     if not rows:
         return []
 
     # 2. Group the full-coverage scenes by 12-day repeat phase (= relative orbit
     #    for a single satellite) and keep the track that best spans the period.
-    ref = min(r["date"] for r in rows).toordinal()
+    ref_ordinal = min(row["date"] for row in rows).toordinal()
     by_phase: dict[int, list[dict]] = {}
-    for r in rows:
-        phase = (r["date"].toordinal() - ref) % S1_REPEAT_DAYS
-        by_phase.setdefault(phase, []).append(r)
+    for row in rows:
+        phase = (row["date"].toordinal() - ref_ordinal) % S1_REPEAT_DAYS
+        by_phase.setdefault(phase, []).append(row)
 
-    def span_days(items: list[dict]) -> int:
-        return (max(i["date"] for i in items) - min(i["date"] for i in items)).days
+    def span_days(phase_rows: list[dict]) -> int:
+        return (max(r["date"] for r in phase_rows) - min(r["date"] for r in phase_rows)).days
 
-    def median_cov(items: list[dict]) -> float:
-        vals = sorted(i["valid_px_pct"] for i in items)
-        return vals[len(vals) // 2]
+    def median_cov(phase_rows: list[dict]) -> float:
+        coverages = sorted(r["valid_px_pct"] for r in phase_rows)
+        return coverages[len(coverages) // 2]
 
     best_phase = max(by_phase, key=lambda p: (len(by_phase[p]), span_days(by_phase[p])))
     kept = sorted(by_phase[best_phase], key=lambda r: r["date"])
@@ -352,11 +317,11 @@ def dedup_single_orbit(rows: list[dict]) -> list[dict]:
     return kept
 
 
-def _open_da(data: bytes):
+def _open_da(tile_data: bytes):
     """Open GeoTIFF bytes as an in-memory rioxarray DataArray (fully loaded)."""
-    with MemoryFile(data) as mf:
-        with mf.open() as ds:
-            return rioxarray.open_rasterio(ds).load()
+    with MemoryFile(tile_data) as memfile:
+        with memfile.open() as dataset:
+            return rioxarray.open_rasterio(dataset).load()
 
 
 def mosaic_tiles(tile_bytes: list[bytes], nodata: int, clip_box: tuple):
@@ -366,18 +331,20 @@ def mosaic_tiles(tile_bytes: list[bytes], nodata: int, clip_box: tuple):
     a common geographic CRS before merging. Padding to the AOI bbox makes the
     valid-pixel percentage AOI-relative (not tile-relative).
     """
-    arrays = []
-    for data in tile_bytes:
+    tile_arrays = []
+    for single_tile_bytes in tile_bytes:
         try:
-            da = _open_da(data)
-            da = da.rio.reproject("EPSG:4326", resampling=Resampling.nearest, nodata=nodata)
-            arrays.append(da)
-        except Exception as e:
-            print(f"(tile skip: {e})", end=" ")
-    if not arrays:
+            tile_raster = _open_da(single_tile_bytes)
+            tile_raster = tile_raster.rio.reproject("EPSG:4326",
+                                                    resampling=Resampling.nearest,
+                                                    nodata=nodata)
+            tile_arrays.append(tile_raster)
+        except Exception as error:
+            print(f"(tile skip: {error})", end=" ")
+    if not tile_arrays:
         return None
 
-    merged = arrays[0] if len(arrays) == 1 else merge_arrays(arrays, nodata=nodata)
+    merged = tile_arrays[0] if len(tile_arrays) == 1 else merge_arrays(tile_arrays, nodata=nodata)
     # Clip to exactly the AOI first: tiles from different UTM zones reproject to
     # an oversized bounding box with NoData corners, which would otherwise deflate
     # the valid-pixel percentage. Then pad back up in case data is smaller than AOI.
@@ -387,11 +354,11 @@ def mosaic_tiles(tile_bytes: list[bytes], nodata: int, clip_box: tuple):
     return merged
 
 
-def _pixel_size_km2_da(da) -> float:
+def _pixel_size_km2_da(raster) -> float:
     """Approximate pixel area (km2) for a geographic (EPSG:4326) DataArray."""
-    t = da.rio.transform()
-    res_x, res_y = abs(t.a), abs(t.e)
-    left, bottom, right, top = da.rio.bounds()
+    transform = raster.rio.transform()
+    res_x, res_y = abs(transform.a), abs(transform.e)
+    left, bottom, right, top = raster.rio.bounds()
     center_lat = (bottom + top) / 2
     return (res_x * 111.32 * np.cos(np.radians(center_lat))) * (res_y * 110.574)
 
@@ -413,19 +380,19 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
     the empty corners of the larger clip_box do not enter the numbers.
     """
     wtr       = wtr_da.values[0]
-    px        = _pixel_size_km2_da(wtr_da)
+    pixel_km2 = _pixel_size_km2_da(wtr_da)
     transform = wtr_da.rio.transform()
     raster_crs = wtr_da.rio.crs
     shape     = wtr.shape
 
-    catch_mask = _catchment_mask(catchment, wtr_da, shape)
-    n_catch    = int(np.sum(catch_mask)) or wtr.size
+    catchment_mask = _catchment_mask(catchment, wtr_da, shape)
+    n_catchment    = int(np.sum(catchment_mask)) or wtr.size
 
-    valid = (wtr != NODATA) & catch_mask   # has data (not fill); incl. cloud-masked 253
-    cloud = (wtr == CLOUD_WTR_VALUE) & catch_mask  # product's own cloud/shadow flag
+    valid = (wtr != NODATA) & catchment_mask   # has data (not fill); incl. cloud-masked 253
+    cloud = (wtr == CLOUD_WTR_VALUE) & catchment_mask  # product's own cloud/shadow flag
 
     n_valid = int(np.sum(valid))
-    valid_pct = float(n_valid) / n_catch * 100
+    valid_pct = float(n_valid) / n_catchment * 100
     cloud_pct = float(np.sum(cloud & valid)) / max(n_valid, 1) * 100
 
     usable      = valid & ~cloud
@@ -436,8 +403,8 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
 
     snow_on_glacier   = snow_mask & glacier_mask
     snow_seasonal     = snow_mask & ~glacier_mask
-    glacier_total_km2 = float(np.sum(glacier_mask & usable) * px)
-    bare_ice_km2      = max(0.0, glacier_total_km2 - float(np.sum(snow_on_glacier) * px))
+    glacier_total_km2 = float(np.sum(glacier_mask & usable) * pixel_km2)
+    bare_ice_km2      = max(0.0, glacier_total_km2 - float(np.sum(snow_on_glacier) * pixel_km2))
 
     # Coverage/cloud-corrected seasonal snow. seasonal_snow_km2 is the raw count
     # and is biased LOW whenever part of the basin is NoData (swath edge) or cloud,
@@ -448,19 +415,19 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
     # snow series comparable across dates with different coverage. (Assumes the
     # unobserved area has a similar snow rate; the MIN_VALID_PCT / MAX_CLOUD_PCT
     # floors keep that extrapolation modest.)
-    nonglacier_full = catch_mask & ~glacier_mask
+    nonglacier_full = catchment_mask & ~glacier_mask
     obs_land        = usable & ~glacier_mask
     n_obs_land      = int(np.sum(obs_land))
     n_full_land     = int(np.sum(nonglacier_full))
     seasonal_snow_frac    = float(np.sum(snow_seasonal)) / n_obs_land if n_obs_land else 0.0
-    seasonal_snow_km2_est = seasonal_snow_frac * float(n_full_land * px)
+    seasonal_snow_km2_est = seasonal_snow_frac * float(n_full_land * pixel_km2)
 
     return {
-        "water_area_km2":          float(np.sum(water_mask) * px),
-        "seasonal_snow_km2":       float(np.sum(snow_seasonal) * px),
+        "water_area_km2":          float(np.sum(water_mask) * pixel_km2),
+        "seasonal_snow_km2":       float(np.sum(snow_seasonal) * pixel_km2),
         "seasonal_snow_frac":      round(seasonal_snow_frac, 4),
         "seasonal_snow_km2_est":   round(seasonal_snow_km2_est, 2),
-        "snow_on_glacier_km2":     float(np.sum(snow_on_glacier) * px),
+        "snow_on_glacier_km2":     float(np.sum(snow_on_glacier) * pixel_km2),
         "bare_ice_km2":            bare_ice_km2,
         "glacier_total_km2":       glacier_total_km2,
         "obs_land_pct":            round(float(n_obs_land) / (n_full_land or 1) * 100, 2),
@@ -472,15 +439,15 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
 # ─────────────────────────────────────────────
 # PER-DATE CACHE (resume across runs)
 # ─────────────────────────────────────────────
-# Computing a date means downloading + mosaicking tiles from Drive (the slow
+# Computing a date means reading + mosaicking tiles from the store (the slow
 # part). We cache the per-date result - including skipped dates and the reason -
 # so re-runs only touch dates not seen before. Pass refresh=True to recompute.
 
 def load_cache(name: str) -> dict:
-    p = CACHE_DIR / f"{name}.json"
-    if p.exists():
+    cache_path = CACHE_DIR / f"{name}.json"
+    if cache_path.exists():
         try:
-            return json.loads(p.read_text())
+            return json.loads(cache_path.read_text())
         except Exception:
             return {}
     return {}
@@ -492,11 +459,11 @@ def save_cache(name: str, cache: dict):
 
 
 def _needs_recompute(entry: dict, sensor: str) -> bool:
-    """For --recompute: does this cached date need a fresh Drive read+compute, or
+    """For --recompute: does this cached date need a fresh store read+compute, or
     can we trust its cached skip decision? We only re-read dates that produce (or
     would now produce) an output row - 'ok' dates and dates that newly pass the
     CURRENT thresholds. Cloud skips and genuine below-threshold partials are kept
-    as-is (no expensive Drive read), since they never contribute a row."""
+    as-is (no expensive store read), since they never contribute a row."""
     if entry.get("status") == "ok":
         return True
     reason = entry.get("reason")
@@ -511,15 +478,16 @@ def _needs_recompute(entry: dict, sensor: str) -> bool:
 def prepare_cache(name: str, sensor: str, refresh: bool, recompute: bool) -> dict:
     """Cache to start the run from. --refresh wipes it (full recompute). --recompute
     keeps it but drops the entries that need a fresh read (ok / now-qualifying), so
-    those get reprocessed while known-skip dates are never read from Drive again."""
+    those get reprocessed while known-skip dates are never read from the store again."""
     if refresh:
         return {}
     cache = load_cache(name)
     if recompute:
         before = len(cache)
-        cache = {d: e for d, e in cache.items() if not _needs_recompute(e, sensor)}
+        cache = {date_str: entry for date_str, entry in cache.items()
+                 if not _needs_recompute(entry, sensor)}
         print(f"  recompute: re-reading {before - len(cache)} dates, "
-              f"keeping {len(cache)} cached skip-decisions (no Drive read)")
+              f"keeping {len(cache)} cached skip-decisions (no store read)")
     return cache
 
 
@@ -541,18 +509,18 @@ def cache_rows(cache: dict) -> list[dict]:
 def save_outputs(rows: list[dict], fieldnames: list[str], stem: str):
     rows.sort(key=lambda r: r["date"])
     csv_path = OUTPUT_DIR / f"{stem}.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+    with csv_path.open("w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     print(f"  Saved: {csv_path} ({len(rows)} rows)")
 
     if HAS_PANDAS:
-        df = pd.DataFrame(rows)[fieldnames]
-        df["date"] = pd.to_datetime(df["date"])
-        pq_path = OUTPUT_DIR / f"{stem}.parquet"
-        df.to_parquet(pq_path, index=False)
-        print(f"  Saved: {pq_path}")
+        output_df = pd.DataFrame(rows)[fieldnames]
+        output_df["date"] = pd.to_datetime(output_df["date"])
+        parquet_path = OUTPUT_DIR / f"{stem}.parquet"
+        output_df.to_parquet(parquet_path, index=False)
+        print(f"  Saved: {parquet_path}")
 
 
 def parse_filename(title: str) -> tuple[str, str, str] | None:
@@ -560,13 +528,13 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
     Handles both new MGRS-tagged names (site_date_TILE_layer_clipped.tif)
     and old names without a tile id (site_date_layer_clipped.tif).
     """
-    m = re.match(
+    match = re.match(
         r"(enguri|zhinvali)_(\d{8})_(?:T\d{2}[A-Z]{3}_)?(B\d+[\w\-]+?)_clipped\.tif",
         title,
     )
-    if not m:
+    if not match:
         return None
-    return m.group(1), m.group(2), m.group(3)
+    return match.group(1), match.group(2), match.group(3)
 
 
 # ─────────────────────────────────────────────
@@ -575,8 +543,7 @@ def parse_filename(title: str) -> tuple[str, str, str] | None:
 
 def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
          recompute: bool = False):
-    print("Authenticating with Google Drive...")
-    drive = authenticate()
+    store = get_store()
 
     # ── RGI glacier data ─────────────────────
     print("\n--- RGI v7 Glacier Data ---")
@@ -590,17 +557,17 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
         else:
             glacier_masks[aoi["name"]] = None
 
-    # Parent OPERA_DSWx folder holding hls/ and s1/
-    opera_root = get_folder_id(drive, DRIVE_PARENT, "root")
+    # Top-level OPERA_DSWx folder holding hls/ and s1/
+    opera_root = store.get_folder_id(DATA_ROOT, ROOT)
     if not opera_root:
-        print(f"  '{DRIVE_PARENT}' folder not found - run download_hls.py / download_s1.py first")
+        print(f"  '{DATA_ROOT}' folder not found - run download_hls.py / download_s1.py first")
         return
 
     # ── DSWx-S1 ──────────────────────────────
     if skip_s1:
         print("\n--- DSWx-S1 skipped (--skip-s1) ---")
     print("\n--- DSWx-S1 B01_WTR ---" if not skip_s1 else "", end="")
-    s1_root = get_folder_id(drive, "s1", opera_root) if not skip_s1 else None
+    s1_root = store.get_folder_id("s1", opera_root) if not skip_s1 else None
 
     for aoi in ([] if skip_s1 else [AOI_1, AOI_2]):
         site = aoi["name"]
@@ -613,22 +580,22 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
         if catchment is not None:
             print(f"  catchment polygon loaded for {site} (stats masked to basin)")
 
-        site_folder = get_folder_id(drive, site, s1_root) if s1_root else None
+        site_folder = store.get_folder_id(site, s1_root) if s1_root else None
         if not site_folder:
             print(f"  Folder not found for {site} (S1) - skipping")
             continue
 
-        files = [f for f in list_tifs_in_folder(drive, site_folder)
-                 if "B01_WTR" in f["title"]]
+        wtr_tiles = [tile for tile in store.list_tifs(site_folder)
+                     if "B01_WTR" in tile["title"]]
 
         # Group ALL tiles per date (multiple MGRS tiles cover the AOI)
         wtr_by_date: dict[str, list] = {}
-        for f in files:
-            meta = parse_filename(f["title"])
-            if not meta:
+        for tile in wtr_tiles:
+            parsed = parse_filename(tile["title"])
+            if not parsed:
                 continue
-            _, date_str, _ = meta
-            wtr_by_date.setdefault(date_str, []).append(f)
+            _, date_str, _ = parsed
+            wtr_by_date.setdefault(date_str, []).append(tile)
 
         dates = sorted(wtr_by_date.keys())
 
@@ -641,15 +608,15 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
             dates = [d for d in dates if orbit_phase(d, anchor) == 0]
 
         cache = prepare_cache(f"{site}_s1", "s1", refresh, recompute)
-        print(f"  {site}: {len(files)} B01_WTR files, {len(dates)} dates "
+        print(f"  {site}: {len(wtr_tiles)} B01_WTR files, {len(dates)} dates "
               f"on the {anchor} orbit ({len(cache)} cached)" if anchor else
-              f"  {site}: {len(files)} B01_WTR files, {len(dates)} dates "
+              f"  {site}: {len(wtr_tiles)} B01_WTR files, {len(dates)} dates "
               f"({len(cache)} cached)")
 
-        for i, date_str in enumerate(dates, 1):
+        for index, date_str in enumerate(dates, 1):
             wtr_files = wtr_by_date[date_str]
             n_tiles = len(wtr_files)
-            prefix = f"  [{i:>3}/{len(dates)}] {site}_s1_{date_str} ({n_tiles} tiles) ..."
+            prefix = f"  [{index:>3}/{len(dates)}] {site}_s1_{date_str} ({n_tiles} tiles) ..."
             cached = cache.get(date_str)
             if cached is not None:
                 # Recompute "ok" dates that predate the reservoir polygon so the
@@ -665,7 +632,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                 save_cache(f"{site}_s1", cache)
                 continue
             try:
-                wtr_mosaic = mosaic_tiles([read_bytes(f) for f in wtr_files],
+                wtr_mosaic = mosaic_tiles([store.read_bytes(tile) for tile in wtr_files],
                                           NODATA, aoi["clip_box"])
                 if wtr_mosaic is None:
                     print("skipped (no readable tiles)")
@@ -678,13 +645,14 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                     cache[date_str] = {"status": "skip", "reason": "coverage", **stats}
                 else:
                     cache[date_str] = {"status": "ok", **stats}
-                    res = stats.get("reservoir_area_km2")
-                    res_str = f"  reservoir={res:.2f} km2" if res is not None else ""
-                    print(f"water={stats['water_km2']:.2f} km2{res_str}  "
+                    reservoir_area = stats.get("reservoir_area_km2")
+                    reservoir_str = (f"  reservoir={reservoir_area:.2f} km2"
+                                     if reservoir_area is not None else "")
+                    print(f"water={stats['water_km2']:.2f} km2{reservoir_str}  "
                           f"(cov {stats['valid_px_pct']:.1f}%)")
                 save_cache(f"{site}_s1", cache)
-            except Exception as e:
-                print(f"ERROR: {e}")  # not cached -> retried next run
+            except Exception as error:
+                print(f"ERROR: {error}")  # not cached -> retried next run
 
         rows = cache_rows(cache)
         # The cache may still hold ok-dates of other phases from earlier full
@@ -703,7 +671,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
     if skip_hls:
         print("\n--- DSWx-HLS skipped (--skip-hls) ---")
     print("\n--- DSWx-HLS B01_WTR (cloud mask = WTR 253) ---" if not skip_hls else "", end="")
-    hls_root = get_folder_id(drive, "hls", opera_root) if not skip_hls else None
+    hls_root = store.get_folder_id("hls", opera_root) if not skip_hls else None
 
     if not skip_hls and not hls_root:
         print("  HLS folder not found - run download_hls.py first")
@@ -717,33 +685,33 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
             print(f"  catchment polygon loaded for {site} (stats masked to basin)")
         rows: list[dict] = []
 
-        site_folder = get_folder_id(drive, site, hls_root)
+        site_folder = store.get_folder_id(site, hls_root)
         if not site_folder:
             print(f"  Folder not found for {site} (HLS)")
             continue
 
-        files = list_tifs_in_folder(drive, site_folder)
+        hls_tiles = store.list_tifs(site_folder)
 
         # Group ALL WTR tiles per date (multiple MGRS tiles cover the AOI).
         # Cloud masking comes from the WTR layer itself (value 253), so the
         # B09_CLOUD layer is no longer needed.
         wtr_by_date: dict[str, list] = {}
-        for f in files:
-            meta = parse_filename(f["title"])
-            if not meta:
+        for tile in hls_tiles:
+            parsed = parse_filename(tile["title"])
+            if not parsed:
                 continue
-            _, date_str, layer = meta
+            _, date_str, layer = parsed
             if "B01_WTR" in layer:
-                wtr_by_date.setdefault(date_str, []).append(f)
+                wtr_by_date.setdefault(date_str, []).append(tile)
 
         dates = sorted(wtr_by_date.keys())
         cache = prepare_cache(f"{site}_hls", "hls", refresh, recompute)
         print(f"  {site}: {len(dates)} WTR dates ({len(cache)} cached)")
 
-        for i, date_str in enumerate(dates, 1):
+        for index, date_str in enumerate(dates, 1):
             wtr_files = wtr_by_date[date_str]
             n_tiles = len(wtr_files)
-            prefix = f"  [{i:>3}/{len(dates)}] {site}_hls_{date_str} ({n_tiles} tiles) ..."
+            prefix = f"  [{index:>3}/{len(dates)}] {site}_hls_{date_str} ({n_tiles} tiles) ..."
             if date_str in cache:
                 continue
             print(prefix, end=" ", flush=True)
@@ -754,7 +722,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                 continue
             try:
                 # Mosaic all WTR tiles for this date into one AOI raster
-                wtr_mosaic = mosaic_tiles([read_bytes(f) for f in wtr_files],
+                wtr_mosaic = mosaic_tiles([store.read_bytes(tile) for tile in wtr_files],
                                           NODATA, aoi["clip_box"])
                 if wtr_mosaic is None:
                     print("skipped (no readable tiles)")
@@ -777,8 +745,8 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                           f"bare_ice={stats['bare_ice_km2']:.1f}  "
                           f"cloud={stats['cloud_cover_percent']:.0f}%")
                 save_cache(f"{site}_hls", cache)
-            except Exception as e:
-                print(f"ERROR: {e}")  # not cached -> retried next run
+            except Exception as error:
+                print(f"ERROR: {error}")  # not cached -> retried next run
 
         rows = cache_rows(cache)
         if rows:
@@ -793,7 +761,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Extract DSWx time series from Google Drive.")
+    parser = argparse.ArgumentParser(description="Extract DSWx time series from the tile store.")
     parser.add_argument("--skip-s1", action="store_true", help="skip the DSWx-S1 section")
     parser.add_argument("--skip-hls", action="store_true", help="skip the DSWx-HLS section")
     parser.add_argument("--refresh", action="store_true",
@@ -801,7 +769,7 @@ if __name__ == "__main__":
     parser.add_argument("--recompute", action="store_true",
                         help="reprocess only 'ok' / now-qualifying dates; keep cached "
                              "skip decisions (cloud / below-threshold) without re-reading "
-                             "them from Drive - much faster after a logic/threshold change")
+                             "them from the store - much faster after a logic/threshold change")
     args = parser.parse_args()
     main(skip_s1=args.skip_s1, skip_hls=args.skip_hls,
          refresh=args.refresh, recompute=args.recompute)

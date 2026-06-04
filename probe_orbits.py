@@ -18,6 +18,7 @@ and check whether S1A/S1C share relative orbits (potential 6-day densification).
 import sys
 import re
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import earthaccess
@@ -37,30 +38,30 @@ def native_name(granule) -> str:
 
 
 def satellite(name: str) -> str:
-    m = re.search(r"_(S1[A-C])_", name)
-    return m.group(1) if m else "?"
+    match = re.search(r"_(S1[A-C])_", name)
+    return match.group(1) if match else "?"
 
 
 def dig_additional_attributes(granule) -> dict:
     """Pull AdditionalAttributes whose name hints at orbit/track/pass."""
-    out = {}
+    orbit_attributes = {}
     try:
-        attrs = granule["umm"].get("AdditionalAttributes", [])
+        attributes = granule["umm"].get("AdditionalAttributes", [])
     except Exception:
-        return out
-    for a in attrs:
-        name = a.get("Name", "")
-        if any(h in name.upper() for h in ORBIT_KEY_HINTS):
-            vals = a.get("Values", [])
-            out[name] = vals[0] if len(vals) == 1 else vals
-    return out
+        return orbit_attributes
+    for attribute in attributes:
+        name = attribute.get("Name", "")
+        if any(hint in name.upper() for hint in ORBIT_KEY_HINTS):
+            values = attribute.get("Values", [])
+            orbit_attributes[name] = values[0] if len(values) == 1 else values
+    return orbit_attributes
 
 
 def orbit_domain(granule) -> dict:
     """Pull OrbitCalculatedSpatialDomains (orbit number, start/stop) if present."""
     try:
-        doms = granule["umm"]["SpatialExtent"]["OrbitCalculatedSpatialDomains"]
-        return doms[0] if doms else {}
+        domains = granule["umm"]["SpatialExtent"]["OrbitCalculatedSpatialDomains"]
+        return domains[0] if domains else {}
     except Exception:
         return {}
 
@@ -77,37 +78,36 @@ def probe_aoi(aoi: dict):
     if not granules:
         return
 
-    by_date = defaultdict(list)
-    for g in granules:
-        by_date[granule_date(g)].append(g)
+    granules_by_date = defaultdict(list)
+    for granule in granules:
+        granules_by_date[granule_date(granule)].append(granule)
 
     # Show which UMM fields are even available, using the first granule
-    sample = granules[0]
+    sample_granule = granules[0]
     print("\n-- sample AdditionalAttributes (orbit-related) --")
-    print(dig_additional_attributes(sample) or "  (none found)")
+    print(dig_additional_attributes(sample_granule) or "  (none found)")
     print("-- sample OrbitCalculatedSpatialDomains --")
-    print(orbit_domain(sample) or "  (none found)")
+    print(orbit_domain(sample_granule) or "  (none found)")
 
-    ref = None
+    ref_ordinal = None
     print(f"\n{'date':<10} {'phase':>5}  {'sat(s)':<12} orbit-info")
-    for date_str in sorted(by_date):
+    for date_str in sorted(granules_by_date):
         if date_str == "unknown":
             continue
-        from datetime import datetime
-        ordn = datetime.strptime(date_str, "%Y%m%d").toordinal()
-        ref = ordn if ref is None else ref
-        phase = (ordn - ref) % 12
+        date_ordinal = datetime.strptime(date_str, "%Y%m%d").toordinal()
+        ref_ordinal = date_ordinal if ref_ordinal is None else ref_ordinal
+        phase = (date_ordinal - ref_ordinal) % 12
 
-        gs = by_date[date_str]
-        sats = sorted({satellite(native_name(g)) for g in gs})
-        attrs = {}
-        for g in gs:
-            attrs.update(dig_additional_attributes(g))
-        dom = orbit_domain(gs[0])
-        info = {**attrs}
-        if dom.get("OrbitNumber") is not None:
-            info["OrbitNumber"] = dom["OrbitNumber"]
-        print(f"{date_str:<10} {phase:>5}  {','.join(sats):<12} {info}")
+        date_granules = granules_by_date[date_str]
+        satellites = sorted({satellite(native_name(g)) for g in date_granules})
+        orbit_attributes = {}
+        for granule in date_granules:
+            orbit_attributes.update(dig_additional_attributes(granule))
+        domain = orbit_domain(date_granules[0])
+        orbit_info = {**orbit_attributes}
+        if domain.get("OrbitNumber") is not None:
+            orbit_info["OrbitNumber"] = domain["OrbitNumber"]
+        print(f"{date_str:<10} {phase:>5}  {','.join(satellites):<12} {orbit_info}")
 
 
 if __name__ == "__main__":
@@ -118,8 +118,8 @@ if __name__ == "__main__":
         earthaccess.login(strategy="interactive", persist=True)
     print("OK")
 
-    wanted = sys.argv[1].lower() if len(sys.argv) > 1 else None
+    wanted_aoi = sys.argv[1].lower() if len(sys.argv) > 1 else None
     for aoi in AOIS:
-        if wanted and aoi["name"] != wanted:
+        if wanted_aoi and aoi["name"] != wanted_aoi:
             continue
         probe_aoi(aoi)

@@ -8,8 +8,9 @@ Run with:
     streamlit run app.py
 """
 
+import base64
 import json
-from datetime import date, timedelta
+import re
 from pathlib import Path
 
 import folium
@@ -36,15 +37,15 @@ from aoi_config import AOIS as _AOI_CONFIG, STATIC_DIR
 
 # Dashboard view, keyed by display label, built from the central AOI config.
 AOIS = {
-    cfg["display_label"]: {
-        "key": cfg["name"],
-        "clip_box": cfg["clip_box"],
-        "center": cfg["center"],
-        "dam": cfg["dam"],
-        "dam_label": cfg["dam_label"],
-        "zoom": cfg["zoom"],
+    aoi_cfg["display_label"]: {
+        "key": aoi_cfg["name"],
+        "clip_box": aoi_cfg["clip_box"],
+        "center": aoi_cfg["center"],
+        "dam": aoi_cfg["dam"],
+        "dam_label": aoi_cfg["dam_label"],
+        "zoom": aoi_cfg["zoom"],
     }
-    for cfg in _AOI_CONFIG.values()
+    for aoi_cfg in _AOI_CONFIG.values()
 }
 
 SNOW_COLORS = {
@@ -70,18 +71,18 @@ def make_mock_data(aoi_key: str) -> pd.DataFrame:
     """Generate realistic mock timeseries for UI testing before real data arrives."""
     rng = np.random.default_rng(seed=42 if aoi_key == "enguri" else 7)
     dates = pd.date_range("2024-08-01", periods=200, freq="3D")
-    t = np.linspace(0, 4 * np.pi, len(dates))
+    time_axis = np.linspace(0, 4 * np.pi, len(dates))
 
-    water      = 12 + 3 * np.sin(t * 0.5 + 1) + rng.normal(0, 0.4, len(dates))
-    seas_snow  = np.clip(60 + 50 * np.sin(t + np.pi) + rng.normal(0, 5, len(dates)), 0, None)
-    glac_snow  = np.clip(30 + 20 * np.sin(t + np.pi) + rng.normal(0, 3, len(dates)), 0, None)
-    bare_ice   = np.clip(20 - 15 * np.sin(t + np.pi) + rng.normal(0, 2, len(dates)), 0, None)
+    water      = 12 + 3 * np.sin(time_axis * 0.5 + 1) + rng.normal(0, 0.4, len(dates))
+    seas_snow  = np.clip(60 + 50 * np.sin(time_axis + np.pi) + rng.normal(0, 5, len(dates)), 0, None)
+    glac_snow  = np.clip(30 + 20 * np.sin(time_axis + np.pi) + rng.normal(0, 3, len(dates)), 0, None)
+    bare_ice   = np.clip(20 - 15 * np.sin(time_axis + np.pi) + rng.normal(0, 2, len(dates)), 0, None)
     cloud      = np.clip(rng.uniform(0, 45, len(dates)), 0, 30)
 
     # Sprinkle some NaN cloud gaps
-    gap_idx = rng.choice(len(dates), size=20, replace=False)
-    for col in [water, seas_snow, glac_snow, bare_ice]:
-        col[gap_idx] = np.nan
+    gap_indices = rng.choice(len(dates), size=20, replace=False)
+    for series in [water, seas_snow, glac_snow, bare_ice]:
+        series[gap_indices] = np.nan
 
     return pd.DataFrame({
         "date":                pd.to_datetime(dates),
@@ -96,18 +97,18 @@ def make_mock_data(aoi_key: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_timeseries(aoi_key: str) -> tuple[pd.DataFrame, bool]:
-    """Load HLS parquet timeseries (snow / glacier). Returns (df, is_mock)."""
+    """Load HLS parquet timeseries (snow / glacier). Returns (timeseries_df, is_mock)."""
     path = Path(f"{aoi_key}_timeseries.parquet")
     if path.exists():
-        df = pd.read_parquet(path)
-        df["date"] = pd.to_datetime(df["date"])
-        return df.sort_values("date").reset_index(drop=True), False
+        timeseries_df = pd.read_parquet(path)
+        timeseries_df["date"] = pd.to_datetime(timeseries_df["date"])
+        return timeseries_df.sort_values("date").reset_index(drop=True), False
     return make_mock_data(aoi_key), True
 
 
 @st.cache_data(show_spinner=False)
 def load_s1_timeseries(aoi_key: str) -> tuple[pd.DataFrame, bool]:
-    """Load DSWx-S1 parquet timeseries (water surface). Returns (df, is_mock).
+    """Load DSWx-S1 parquet timeseries (water surface). Returns (timeseries_df, is_mock).
 
     Water comes from S1, not HLS: optical HLS massively over-detects water
     (terrain shadow / ice misclassified), so the reservoir water signal uses
@@ -115,15 +116,15 @@ def load_s1_timeseries(aoi_key: str) -> tuple[pd.DataFrame, bool]:
     """
     path = Path(f"{aoi_key}_s1_timeseries.parquet")
     if path.exists():
-        df = pd.read_parquet(path)
-        df["date"] = pd.to_datetime(df["date"])
-        return df.sort_values("date").reset_index(drop=True), False
+        timeseries_df = pd.read_parquet(path)
+        timeseries_df["date"] = pd.to_datetime(timeseries_df["date"])
+        return timeseries_df.sort_values("date").reset_index(drop=True), False
     # Mock fallback: a smooth ~12-day water series
     rng = np.random.default_rng(seed=99 if aoi_key == "enguri" else 13)
     dates = pd.date_range("2024-08-01", periods=55, freq="12D")
-    t = np.linspace(0, 4 * np.pi, len(dates))
+    time_axis = np.linspace(0, 4 * np.pi, len(dates))
     base = 24 if aoi_key == "enguri" else 40
-    water = base + 6 * np.sin(t * 0.5 + 1) + rng.normal(0, 0.6, len(dates))
+    water = base + 6 * np.sin(time_axis * 0.5 + 1) + rng.normal(0, 0.6, len(dates))
     return pd.DataFrame({
         "date": pd.to_datetime(dates),
         "water_km2": np.round(water, 2),
@@ -185,8 +186,8 @@ def ensure_rivers() -> Path | None:
             },
         ],
     }
-    with open(path, "w") as f:
-        json.dump(rivers, f)
+    with path.open("w") as rivers_file:
+        json.dump(rivers, rivers_file)
     return path
 
 
@@ -195,9 +196,10 @@ def load_rivers(aoi_key: str) -> list[dict] | None:
     path = ensure_rivers()
     if path is None:
         return None
-    with open(path) as f:
-        gj = json.load(f)
-    return [ft for ft in gj["features"] if ft["properties"]["aoi"] == aoi_key]
+    with path.open() as rivers_file:
+        rivers_geojson = json.load(rivers_file)
+    return [feature for feature in rivers_geojson["features"]
+            if feature["properties"]["aoi"] == aoi_key]
 
 
 @st.cache_data(show_spinner=False)
@@ -207,23 +209,22 @@ def load_glaciers(clip_box: tuple) -> gpd.GeoDataFrame | None:
         return None
     try:
         min_lon, min_lat, max_lon, max_lat = clip_box
-        gdf = gpd.read_file(candidates[0], bbox=(min_lon, min_lat, max_lon, max_lat))
-        if gdf.crs and gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        if gdf.empty:
+        glaciers_gdf = gpd.read_file(candidates[0], bbox=(min_lon, min_lat, max_lon, max_lat))
+        if glaciers_gdf.crs and glaciers_gdf.crs.to_epsg() != 4326:
+            glaciers_gdf = glaciers_gdf.to_crs("EPSG:4326")
+        if glaciers_gdf.empty:
             return None
         # Clean the name column: keep only real names; blank out empty values and
         # catalogue IDs (e.g. "198b", "193a") - a real name has a run of >=3
         # letters, an ID does not. Unicode-aware so Cyrillic names are kept.
-        if "glac_name" in gdf.columns:
-            import re
-            def _clean_name(v):
-                s = "" if v is None else str(v).strip()
-                if s.lower() in ("", "nan", "none"):
+        if "glac_name" in glaciers_gdf.columns:
+            def _clean_name(value):
+                name = "" if value is None else str(value).strip()
+                if name.lower() in ("", "nan", "none"):
                     return ""
-                return s if re.search(r"[^\W\d_]{3,}", s) else ""
-            gdf["glac_name"] = gdf["glac_name"].map(_clean_name)
-        return gdf
+                return name if re.search(r"[^\W\d_]{3,}", name) else ""
+            glaciers_gdf["glac_name"] = glaciers_gdf["glac_name"].map(_clean_name)
+        return glaciers_gdf
     except Exception:
         return None
 
@@ -236,13 +237,13 @@ def load_catchment(aoi_key: str) -> gpd.GeoDataFrame | None:
     if not path.exists():
         return None
     try:
-        gdf = gpd.read_file(path)
-        gdf = gdf[gdf["aoi"] == aoi_key]
-        if gdf.empty:
+        catchment_gdf = gpd.read_file(path)
+        catchment_gdf = catchment_gdf[catchment_gdf["aoi"] == aoi_key]
+        if catchment_gdf.empty:
             return None
-        if gdf.crs and gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        return gdf
+        if catchment_gdf.crs and catchment_gdf.crs.to_epsg() != 4326:
+            catchment_gdf = catchment_gdf.to_crs("EPSG:4326")
+        return catchment_gdf
     except Exception:
         return None
 
@@ -254,13 +255,13 @@ def load_reservoir(aoi_key: str) -> gpd.GeoDataFrame | None:
     if not path.exists():
         return None
     try:
-        gdf = gpd.read_file(path)
-        gdf = gdf[gdf["aoi"] == aoi_key]
-        if gdf.empty:
+        reservoir_gdf = gpd.read_file(path)
+        reservoir_gdf = reservoir_gdf[reservoir_gdf["aoi"] == aoi_key]
+        if reservoir_gdf.empty:
             return None
-        if gdf.crs and gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        return gdf
+        if reservoir_gdf.crs and reservoir_gdf.crs.to_epsg() != 4326:
+            reservoir_gdf = reservoir_gdf.to_crs("EPSG:4326")
+        return reservoir_gdf
     except Exception:
         return None
 
@@ -278,15 +279,15 @@ OVERLAY_SENSORS = {"Water (S1)": "s1", "Snow & ice (HLS)": "hls"}
 def load_overlay_index(aoi_key: str, sensor: str) -> dict | None:
     """Available pre-rendered scenes for one AOI+sensor: the date list and the
     shared geographic bounds. Returns None if render_overlays.py has not run."""
-    d = OVERLAY_DIR / aoi_key / sensor
-    bounds_f = d / "bounds.json"
-    if not d.exists() or not bounds_f.exists():
+    overlay_dir = OVERLAY_DIR / aoi_key / sensor
+    bounds_path = overlay_dir / "bounds.json"
+    if not overlay_dir.exists() or not bounds_path.exists():
         return None
     try:
-        bounds = json.loads(bounds_f.read_text())["bounds"]
+        bounds = json.loads(bounds_path.read_text())["bounds"]
     except Exception:
         return None
-    dates = sorted(p.stem for p in d.glob("*.png"))
+    dates = sorted(png_path.stem for png_path in overlay_dir.glob("*.png"))
     if not dates:
         return None
     return {"bounds": bounds, "dates": dates}
@@ -296,11 +297,10 @@ def load_overlay_index(aoi_key: str, sensor: str) -> dict | None:
 def load_overlay_uri(aoi_key: str, sensor: str, date_str: str) -> str | None:
     """Read one overlay PNG as a base64 data URI (so it embeds straight into the
     folium map without needing a served file)."""
-    png = OVERLAY_DIR / aoi_key / sensor / f"{date_str}.png"
-    if not png.exists():
+    png_path = OVERLAY_DIR / aoi_key / sensor / f"{date_str}.png"
+    if not png_path.exists():
         return None
-    import base64
-    return "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode()
+    return "data:image/png;base64," + base64.b64encode(png_path.read_bytes()).decode()
 
 
 # ─────────────────────────────────────────────
@@ -311,10 +311,10 @@ def _river_weight(ord_flow) -> float:
     """Line width from flow order (lower order = larger river = thicker).
     Gradation keeps big rivers prominent and small brooks (order 7-8) thin."""
     try:
-        o = int(ord_flow)
+        order = int(ord_flow)
     except (TypeError, ValueError):
-        o = 6
-    return min(4.0, max(0.6, (9 - o) * 0.7))
+        order = 6
+    return min(4.0, max(0.6, (9 - order) * 0.7))
 
 
 def _chaikin(coords: list, iters: int = 2) -> list:
@@ -322,13 +322,15 @@ def _chaikin(coords: list, iters: int = 2) -> list:
     for _ in range(iters):
         if len(coords) < 3:
             break
-        new = [coords[0]]
+        smoothed = [coords[0]]
         for i in range(len(coords) - 1):
-            p, q = coords[i], coords[i + 1]
-            new.append([0.75 * p[0] + 0.25 * q[0], 0.75 * p[1] + 0.25 * q[1]])
-            new.append([0.25 * p[0] + 0.75 * q[0], 0.25 * p[1] + 0.75 * q[1]])
-        new.append(coords[-1])
-        coords = new
+            point, next_point = coords[i], coords[i + 1]
+            smoothed.append([0.75 * point[0] + 0.25 * next_point[0],
+                             0.75 * point[1] + 0.25 * next_point[1]])
+            smoothed.append([0.25 * point[0] + 0.75 * next_point[0],
+                             0.25 * point[1] + 0.75 * next_point[1]])
+        smoothed.append(coords[-1])
+        coords = smoothed
     return coords
 
 
@@ -336,19 +338,20 @@ def smooth_river_features(features: list[dict]) -> list[dict]:
     """Return copies of river features with Chaikin-smoothed geometry. This only
     changes how the lines are drawn; the underlying HydroRIVERS topology and flow
     order (used for the catchment filter and line width) are untouched."""
-    out = []
-    for f in features:
-        geom = f["geometry"]
-        gtype = geom["type"]
-        if gtype == "LineString":
+    smoothed_features = []
+    for feature in features:
+        geom = feature["geometry"]
+        geom_type = geom["type"]
+        if geom_type == "LineString":
             new_geom = {"type": "LineString", "coordinates": _chaikin(geom["coordinates"])}
-        elif gtype == "MultiLineString":
+        elif geom_type == "MultiLineString":
             new_geom = {"type": "MultiLineString",
                         "coordinates": [_chaikin(line) for line in geom["coordinates"]]}
         else:
             new_geom = geom
-        out.append({"type": "Feature", "properties": f["properties"], "geometry": new_geom})
-    return out
+        smoothed_features.append({"type": "Feature", "properties": feature["properties"],
+                                  "geometry": new_geom})
+    return smoothed_features
 
 
 def river_label_point(features: list[dict]) -> tuple[float, float] | None:
@@ -356,19 +359,19 @@ def river_label_point(features: list[dict]) -> tuple[float, float] | None:
     anchor the river-name label, so the name always sits on the actual river."""
     if not features:
         return None
-    orders = [f["properties"].get("ORD_FLOW", 9) for f in features]
-    min_ord = min(orders)
-    best, best_len = None, -1.0
-    for f in features:
-        if f["properties"].get("ORD_FLOW", 9) != min_ord:
+    orders = [feature["properties"].get("ORD_FLOW", 9) for feature in features]
+    min_order = min(orders)
+    longest_line, longest_length = None, -1.0
+    for feature in features:
+        if feature["properties"].get("ORD_FLOW", 9) != min_order:
             continue
-        g = shape(f["geometry"])
-        if g.length > best_len:
-            best, best_len = g, g.length
-    if best is None:
+        line_geom = shape(feature["geometry"])
+        if line_geom.length > longest_length:
+            longest_line, longest_length = line_geom, line_geom.length
+    if longest_line is None:
         return None
-    pt = best.interpolate(0.5, normalized=True)
-    return (pt.y, pt.x)
+    label_point = longest_line.interpolate(0.5, normalized=True)
+    return (label_point.y, label_point.x)
 
 
 def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None,
@@ -378,18 +381,18 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     center_lat = (min_lat + max_lat) / 2
     center_lon = (min_lon + max_lon) / 2
 
-    m = folium.Map(
+    fmap = folium.Map(
         location=[center_lat, center_lon],
         tiles="CartoDB positron",
     )
     # Fit exactly to the AOI so it is always centered regardless of AOI size
-    m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+    fmap.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
     # Reservoir centre for placing the reservoir-name label on the lake itself.
     res_label_anchor = None
     if reservoir is not None and not reservoir.empty:
-        c = reservoir.geometry.union_all().centroid
-        res_label_anchor = (c.y, c.x)
+        reservoir_centroid = reservoir.geometry.union_all().centroid
+        res_label_anchor = (reservoir_centroid.y, reservoir_centroid.x)
 
     # AOI = the drainage basin above the dam (HydroBASINS catchment). Draw its
     # contour; the dashed bbox is only a fallback when the catchment is missing.
@@ -404,7 +407,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                 "fillOpacity": 0.04,
             },
             tooltip="Catchment above the dam",
-        ).add_to(m)
+        ).add_to(fmap)
     else:
         folium.Rectangle(
             bounds=[[min_lat, min_lon], [max_lat, max_lon]],
@@ -413,7 +416,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             dash_array="6,6",
             fill=False,
             tooltip="Area of interest (AOI)",
-        ).add_to(m)
+        ).add_to(fmap)
 
     # Glacier polygons - cool light violet so they stay distinct from the blue
     # water layers and the white basemap. Split into named/unnamed: only named
@@ -445,7 +448,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                 style_function=glacier_style,
                 tooltip=folium.GeoJsonTooltip(fields=["glac_name"], labels=False),
             ).add_to(glacier_group)
-        glacier_group.add_to(m)
+        glacier_group.add_to(fmap)
 
     # River lines - GeoJson handles both LineString and MultiLineString.
     # Width scales with flow order (larger rivers thicker, small tributaries thin).
@@ -476,10 +479,10 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                 style_function=river_style,
                 tooltip=river_name if river_name else None,
             ).add_to(river_group)
-        river_group.add_to(m)
+        river_group.add_to(fmap)
 
-        # Persistent reservoir-name label on the lake itself (e.g. Zhinvali-
-        # Stausee), falling back to the main-stem midpoint if no reservoir polygon.
+        # Persistent reservoir-name label on the lake itself (e.g. Zhinvali
+        # Reservoir), falling back to the main-stem midpoint if no reservoir polygon.
         anchor = res_label_anchor if res_label_anchor else river_label_point(rivers)
         name = RESERVOIR_NAME.get(aoi["key"])
         if anchor and name:
@@ -495,14 +498,15 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                         f'{name}</div>'
                     ),
                 ),
-            ).add_to(m)
+            ).add_to(fmap)
 
     # Reservoir footprint (S1-derived) - the actual lake polygon. The headline
     # feature, so make it pop: vivid blue fill + crisp dark outline on top of the
     # paler river/water layers.
     if reservoir is not None and not reservoir.empty:
-        area = reservoir.iloc[0].get("area_km2")
-        tip = f"Reservoir footprint (S1)" + (f": {area:.2f} km²" if area is not None else "")
+        area_km2 = reservoir.iloc[0].get("area_km2")
+        tooltip = "Reservoir footprint (S1)" + (f": {area_km2:.2f} km²"
+                                                if area_km2 is not None else "")
         folium.GeoJson(
             reservoir.__geo_interface__,
             name="Reservoir footprint (S1)",
@@ -513,11 +517,11 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                 "fillOpacity": 0.78,
             },
             highlight_function=lambda _: {"weight": 3.5, "fillOpacity": 0.9},
-            tooltip=tip,
-        ).add_to(m)
+            tooltip=tooltip,
+        ).add_to(fmap)
 
-    folium.LayerControl().add_to(m)
-    return m
+    folium.LayerControl().add_to(fmap)
+    return fmap
 
 
 def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
@@ -527,8 +531,8 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
     """Light-weight map for the scene browser: basemap, catchment contour, the
     chosen pre-rendered raster, and (for HLS) the RGI glacier outlines so glaciers
     are always clearly bounded - whether currently snow-covered or bare ice."""
-    m = folium.Map(tiles="CartoDB positron")
-    m.fit_bounds(bounds)
+    fmap = folium.Map(tiles="CartoDB positron")
+    fmap.fit_bounds(bounds)
 
     if catchment is not None and not catchment.empty:
         folium.GeoJson(
@@ -536,11 +540,11 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
             style_function=lambda _: {
                 "color": "#5d6d7e", "weight": 2.0, "fill": False,
             },
-        ).add_to(m)
+        ).add_to(fmap)
 
     folium.raster_layers.ImageOverlay(
         image=png_uri, bounds=bounds, opacity=0.9, zindex=10,
-    ).add_to(m)
+    ).add_to(fmap)
 
     # RGI glacier outlines (violet, no fill) so the glacier extent reads clearly
     # against the cyan snow field / over the bare-ice raster.
@@ -550,7 +554,7 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
             style_function=lambda _: {
                 "color": "#5e4b8b", "weight": 1.0, "fill": False, "opacity": 0.9,
             },
-        ).add_to(m)
+        ).add_to(fmap)
 
     # Thin reservoir outline on top, for orientation against the water raster.
     if reservoir is not None and not reservoir.empty:
@@ -559,8 +563,8 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
             style_function=lambda _: {
                 "color": "#0b3d66", "weight": 1.5, "fill": False,
             },
-        ).add_to(m)
-    return m
+        ).add_to(fmap)
+    return fmap
 
 
 # Overlay legend swatches - colours match the rendered PNG classes (render_overlays.py).
@@ -608,19 +612,20 @@ def render_overlay_legend(sensor: str):
 # CHARTS
 # ─────────────────────────────────────────────
 
-def chart_water(df: pd.DataFrame) -> go.Figure:
+def chart_water(timeseries_df: pd.DataFrame) -> go.Figure:
     """Water surface from DSWx-S1. SAR is cloud-independent, so the series is
     gap-free. Shows the reservoir-only footprint (reservoir_area_km2) as the
     main, level-relevant signal and the AOI-wide water (water_km2, incl. rivers)
     as a fainter reference line."""
     fig = go.Figure()
 
-    has_res = "reservoir_area_km2" in df.columns and df["reservoir_area_km2"].notna().any()
+    has_reservoir = ("reservoir_area_km2" in timeseries_df.columns
+                     and timeseries_df["reservoir_area_km2"].notna().any())
 
     # AOI-wide water (includes rivers/other) - reference, drawn fainter
     fig.add_trace(go.Scatter(
-        x=df["date"],
-        y=df["water_km2"],
+        x=timeseries_df["date"],
+        y=timeseries_df["water_km2"],
         mode="lines+markers",
         name="AOI water total (incl. rivers)",
         line=dict(color="#aab7c4", width=1.5, dash="dot"),
@@ -632,10 +637,10 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
     # Robustness lives in the data layer: the reservoir guard already sets dates
     # where the lake is under-observed to NaN (connectgaps=False -> shown as a gap),
     # so no false drawdowns reach the line and no extra smoothing trace is needed.
-    if has_res:
+    if has_reservoir:
         fig.add_trace(go.Scatter(
-            x=df["date"],
-            y=df["reservoir_area_km2"],
+            x=timeseries_df["date"],
+            y=timeseries_df["reservoir_area_km2"],
             mode="lines+markers",
             name="Reservoir area (footprint)",
             line=dict(color="#1a5276", width=2.5),
@@ -659,34 +664,34 @@ def chart_water(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def chart_snow(df: pd.DataFrame) -> go.Figure:
+def chart_snow(timeseries_df: pd.DataFrame) -> go.Figure:
     fig = go.Figure()
 
     # Prefer the coverage/cloud-corrected seasonal snow when available, so partial
     # (swath-edge) dates are not biased low against full-coverage dates.
-    seas_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in df.columns
-                else "seasonal_snow_km2")
-    snow_cols = [seas_col, "snow_on_glacier_km2", "bare_ice_km2"]
+    seasonal_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in timeseries_df.columns
+                    else "seasonal_snow_km2")
+    snow_cols = [seasonal_col, "snow_on_glacier_km2", "bare_ice_km2"]
 
     # Cloud gap shading (same logic, based on first snow column)
-    gap_mask = df[snow_cols[0]].isna()
+    gap_mask = timeseries_df[snow_cols[0]].isna()
     in_gap = False
     gap_start = None
-    for i, is_gap in enumerate(gap_mask):
+    for index, is_gap in enumerate(gap_mask):
         if is_gap and not in_gap:
-            gap_start = df["date"].iloc[i]
+            gap_start = timeseries_df["date"].iloc[index]
             in_gap = True
         elif not is_gap and in_gap:
             fig.add_vrect(
-                x0=gap_start, x1=df["date"].iloc[i],
+                x0=gap_start, x1=timeseries_df["date"].iloc[index],
                 fillcolor="lightgray", opacity=0.3, line_width=0,
             )
             in_gap = False
 
     for col in snow_cols:
         fig.add_trace(go.Scatter(
-            x=df["date"],
-            y=df[col],
+            x=timeseries_df["date"],
+            y=timeseries_df[col],
             mode="lines",
             name=SNOW_LABELS[col],
             stackgroup="snow",
@@ -717,7 +722,6 @@ def chart_snow(df: pd.DataFrame) -> go.Figure:
 
 st.set_page_config(
     page_title="From Snow to Reservoir",
-    page_icon="🏔",
     layout="wide",
 )
 
@@ -746,7 +750,6 @@ if is_mock_hls or is_mock_s1:
     st.warning(
         "Parquet file(s) not present yet, so the dashboard shows partly synthetic "
         "demo data. Run extract_timeseries.py for real values.",
-        icon="⏳",
     )
 
 # Date range slider (spanning both series)
@@ -761,49 +764,50 @@ date_range = st.sidebar.slider(
     format="DD.MM.YYYY",
 )
 
-def _slice(d: pd.DataFrame) -> pd.DataFrame:
-    return d[(d["date"] >= pd.Timestamp(date_range[0])) &
-             (d["date"] <= pd.Timestamp(date_range[1]))].copy()
+def _slice(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame[(frame["date"] >= pd.Timestamp(date_range[0])) &
+                 (frame["date"] <= pd.Timestamp(date_range[1]))].copy()
 
-df    = _slice(df_hls_full)   # HLS: snow / glacier
-df_s1 = _slice(df_s1_full)    # S1: water
+hls_df = _slice(df_hls_full)   # HLS: snow / glacier
+df_s1  = _slice(df_s1_full)    # S1: water
 
 # ── KPI tiles ────────────────────────────────
 # Water from S1; snow / glacier from HLS
-latest_w   = df_s1.iloc[-1] if not df_s1.empty else None
-max_water  = df_s1["water_km2"].max() if not df_s1.empty else None
+latest_s1   = df_s1.iloc[-1] if not df_s1.empty else None
+max_water   = df_s1["water_km2"].max() if not df_s1.empty else None
 
-latest_h    = df.iloc[-1] if not df.empty else None
+latest_hls  = hls_df.iloc[-1] if not hls_df.empty else None
 # Use the coverage-corrected seasonal snow when present (comparable across dates).
-_seas_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in df.columns
-             else "seasonal_snow_km2")
-max_snow    = (df[_seas_col] + df["snow_on_glacier_km2"]).max() if not df.empty else None
+seasonal_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in hls_df.columns
+                else "seasonal_snow_km2")
+max_snow    = ((hls_df[seasonal_col] + hls_df["snow_on_glacier_km2"]).max()
+               if not hls_df.empty else None)
 latest_snow = (
-    latest_h[_seas_col] + latest_h["snow_on_glacier_km2"]
-    if latest_h is not None else None
+    latest_hls[seasonal_col] + latest_hls["snow_on_glacier_km2"]
+    if latest_hls is not None else None
 )
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    res_series = (df_s1["reservoir_area_km2"] if "reservoir_area_km2" in df_s1.columns
-                  else pd.Series(dtype=float))
-    has_res = res_series.notna().any()
-    if has_res:
+    reservoir_series = (df_s1["reservoir_area_km2"] if "reservoir_area_km2" in df_s1.columns
+                        else pd.Series(dtype=float))
+    has_reservoir = reservoir_series.notna().any()
+    if has_reservoir:
         # Current = last date with a valid lake reading; max over valid dates.
         # (False-drawdown dates are already NaN via the reservoir guard.)
-        max_res    = res_series.max()
-        latest_res = res_series.dropna().iloc[-1]
+        max_reservoir    = reservoir_series.max()
+        latest_reservoir = reservoir_series.dropna().iloc[-1]
         st.metric(
             "Reservoir area (S1, current)",
-            f"{latest_res:.2f} km²",
-            delta=f"Max: {max_res:.2f} km²",
+            f"{latest_reservoir:.2f} km²",
+            delta=f"Max: {max_reservoir:.2f} km²",
             delta_color="off",
         )
-    elif latest_w is not None:
+    elif latest_s1 is not None:
         st.metric(
             "Water area (S1, current)",
-            f"{latest_w['water_km2']:.2f} km²",
+            f"{latest_s1['water_km2']:.2f} km²",
             delta=f"Max: {max_water:.2f} km²",
             delta_color="off",
         )
@@ -822,8 +826,8 @@ with col2:
         st.metric("Total snow (HLS, current)", "No data")
 
 with col3:
-    if latest_h is not None:
-        st.metric("Bare glacier ice", f"{latest_h['bare_ice_km2']:.1f} km²")
+    if latest_hls is not None:
+        st.metric("Bare glacier ice", f"{latest_hls['bare_ice_km2']:.1f} km²")
     else:
         st.metric("Bare glacier ice", "No data")
 
@@ -831,7 +835,7 @@ with col4:
     st.metric(
         "Scenes in range",
         f"{len(df_s1)} S1 (water)",
-        delta=f"{len(df)} HLS (snow)",
+        delta=f"{len(hls_df)} HLS (snow)",
         delta_color="off",
     )
 
@@ -848,27 +852,28 @@ with map_col:
         reservoir = load_reservoir(aoi["key"])
         catchment = load_catchment(aoi["key"])
 
-    caps = []
+    captions = []
     if catchment is not None:
-        caps.append("Catchment (HydroBASINS)")
+        captions.append("Catchment (HydroBASINS)")
     if glaciers is not None:
         # Count only glaciers inside the basin, matching the catchment-clipped map.
         if catchment is not None and not catchment.empty:
-            n_glac = int(glaciers.geometry.intersects(catchment.geometry.union_all()).sum())
+            n_glaciers = int(glaciers.geometry.intersects(catchment.geometry.union_all()).sum())
         else:
-            n_glac = len(glaciers)
-        caps.append(f"{n_glac} RGI v7 glacier polygons")
+            n_glaciers = len(glaciers)
+        captions.append(f"{n_glaciers} RGI v7 glacier polygons")
     else:
-        caps.append("RGI glacier data not found")
+        captions.append("RGI glacier data not found")
     if reservoir is not None:
-        res_area = reservoir.iloc[0].get("area_km2")
-        caps.append(f"Reservoir footprint (S1){f': {res_area:.2f} km²' if res_area is not None else ''}")
+        reservoir_area = reservoir.iloc[0].get("area_km2")
+        captions.append(f"Reservoir footprint (S1)"
+                        f"{f': {reservoir_area:.2f} km²' if reservoir_area is not None else ''}")
     else:
-        caps.append("Reservoir footprint not found, run derive_reservoir.py")
-    st.caption(" · ".join(caps))
+        captions.append("Reservoir footprint not found, run derive_reservoir.py")
+    st.caption(" · ".join(captions))
 
-    m = build_map(aoi, rivers, glaciers, reservoir, catchment)
-    st_folium(m, height=430, use_container_width=True)
+    aoi_map = build_map(aoi, rivers, glaciers, reservoir, catchment)
+    st_folium(aoi_map, height=430, use_container_width=True)
 
 with chart_col:
     st.subheader("Time series")
@@ -878,7 +883,7 @@ with chart_col:
         st.plotly_chart(chart_water(df_s1), width="stretch")
 
     with tab2:
-        st.plotly_chart(chart_snow(df), width="stretch")
+        st.plotly_chart(chart_snow(hls_df), width="stretch")
 
 # ── Scene browser (pre-rendered raster overlays) ─────────
 st.divider()
@@ -889,36 +894,37 @@ sensor_label = st.radio(
     help="S1 (radar, cloud independent) shows water; HLS (optical) shows snow and ice.",
 )
 sensor = OVERLAY_SENSORS[sensor_label]
-ov = load_overlay_index(aoi["key"], sensor)
+overlay_index = load_overlay_index(aoi["key"], sensor)
 
-if ov is None:
+if overlay_index is None:
     st.info(
         "No scenes have been rendered for this area and sensor yet. "
-        "Run `python render_overlays.py` (it reads the GeoTIFFs from Drive and "
-        "writes coloured PNGs into static_data/overlays/)."
+        "Run `python render_overlays.py` (it reads the GeoTIFFs from the tile "
+        "store and writes coloured PNGs into static_data/overlays/)."
     )
 else:
-    dates = ov["dates"]
-    chosen = st.select_slider(
+    dates = overlay_index["dates"]
+    chosen_date = st.select_slider(
         "Date", options=dates, value=dates[-1],
         format_func=lambda d: f"{d[6:8]}.{d[4:6]}.{d[0:4]}",
     )
-    uri = load_overlay_uri(aoi["key"], sensor, chosen)
-    if uri is None:
+    overlay_uri = load_overlay_uri(aoi["key"], sensor, chosen_date)
+    if overlay_uri is None:
         st.warning("Scene not readable.")
     else:
         # Clip the glacier outlines to the catchment so they end exactly at the
         # basin boundary - matching the catchment-masked raster and the
         # catchment-relative statistics (glaciers outside don't feed this reservoir).
-        glac_arg = None
+        glaciers_clipped = None
         if sensor == "hls" and glaciers is not None:
-            glac_arg = (gpd.clip(glaciers, catchment)
-                        if catchment is not None and not catchment.empty
-                        else glaciers)
-        ov_map = build_overlay_map(
-            aoi, uri, ov["bounds"], catchment, reservoir, glaciers=glac_arg,
+            glaciers_clipped = (gpd.clip(glaciers, catchment)
+                                if catchment is not None and not catchment.empty
+                                else glaciers)
+        overlay_map = build_overlay_map(
+            aoi, overlay_uri, overlay_index["bounds"], catchment, reservoir,
+            glaciers=glaciers_clipped,
         )
-        st_folium(ov_map, height=430, use_container_width=True,
+        st_folium(overlay_map, height=430, use_container_width=True,
                   key=f"overlay_{aoi['key']}_{sensor}")
     render_overlay_legend(sensor)
 
@@ -932,8 +938,26 @@ with st.expander("Show raw data"):
     st.caption("Snow / glaciers (DSWx-HLS)")
     # Drop the optical HLS water column: it massively over-detects water
     # (terrain shadow / ice misclassified); the water signal comes from S1.
-    df_hls_view = df.drop(columns=["water_area_km2"], errors="ignore")
+    hls_view_df = hls_df.drop(columns=["water_area_km2"], errors="ignore")
     st.dataframe(
-        df_hls_view.sort_values("date", ascending=False).reset_index(drop=True),
+        hls_view_df.sort_values("date", ascending=False).reset_index(drop=True),
         width="stretch", hide_index=True,
+    )
+
+# ── About ─────────────────────────────────────
+with st.expander("About this project"):
+    st.caption(
+        "This dashboard tracks the snow to glacier to reservoir water chain above "
+        "two Georgian hydropower dams (Enguri and Zhinvali) from open satellite "
+        "data. Reservoir and water area come from Sentinel-1 radar (DSWx-S1, "
+        "cloud-independent); seasonal snow and glacier cover come from optical HLS "
+        "(DSWx-HLS). Statistics are masked to each dam's upstream catchment "
+        "(HydroBASINS). Built for the university course Automated Geospatial Data "
+        "Processing."
+    )
+    st.markdown(
+        "Live app: [from-snow-to-reservoir.streamlit.app]"
+        "(https://from-snow-to-reservoir.streamlit.app/)  \n"
+        "Source and methodology: [GitHub]"
+        "(https://github.com/sebastianmry/from-snow-to-reservoir)"
     )

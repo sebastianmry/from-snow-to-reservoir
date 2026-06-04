@@ -1,0 +1,83 @@
+name: Update satellite data
+
+# Weekly refresh of the dashboard data. The Sentinel-1 / HLS scenes for the two
+# AOIs renew only every ~6-12 days, so a weekly run reliably catches every new
+# scene. The pipeline is incremental (it only downloads / processes dates that
+# are not already cached), so a run with nothing new is cheap and commits nothing.
+on:
+  schedule:
+    - cron: "0 3 * * 1"      # Mondays 03:00 UTC
+  workflow_dispatch:          # manual "Run workflow" button
+
+# Never let two runs overwrite each other's commit.
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # needed to push the refreshed artefacts back
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pipeline dependencies
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Configure tile store path
+        run: echo "PIPELINE_LOCAL_DIR=$RUNNER_TEMP/opera_tiles" >> "$GITHUB_ENV"
+
+      # Earthdata login for earthaccess (the only credential the CI needs).
+      - name: Write Earthdata .netrc
+        run: |
+          umask 177
+          cat > "$HOME/.netrc" <<EOF
+          machine urs.earthdata.nasa.gov login ${{ secrets.EARTHDATA_USERNAME }} password ${{ secrets.EARTHDATA_PASSWORD }}
+          EOF
+
+      # Restore the tile store + per-date stats cache from the previous run so
+      # downloads and extraction stay incremental. The run_id in the key makes a
+      # fresh entry each run; restore-keys falls back to the most recent prefix.
+      - name: Restore tile + stats cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/opera_tiles
+            static_data/cache
+          key: opera-store-${{ github.run_id }}
+          restore-keys: |
+            opera-store-
+
+      - name: Download new OPERA tiles
+        run: |
+          python download_s1.py
+          python download_hls.py
+
+      - name: Extract time series
+        run: python extract_timeseries.py
+
+      - name: Render scene overlays
+        run: python render_overlays.py
+
+      - name: Commit and push refreshed data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add *_timeseries.parquet static_data/overlays
+          if git diff --cached --quiet; then
+            echo "No data changes - nothing to commit."
+          else
+            git commit -m "Auto-update satellite data ($(date -u +%Y-%m-%d))"
+            git push
+          fi

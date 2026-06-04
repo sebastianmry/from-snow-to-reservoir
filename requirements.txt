@@ -1,17 +1,18 @@
-earthaccess
-rioxarray
-rasterio
-pydrive2
-tqdm
-python-dotenv
-numpy
-pandas
-pyarrow
-geopandas
-shapely
-scipy
-requests
-streamlit
-plotly
-folium
-streamlit-folium
+# Runtime dependencies for the Streamlit dashboard (app.py).
+# Streamlit Cloud installs this file automatically. Kept slim on purpose:
+# the heavy pipeline deps (rasterio, rioxarray, earthaccess, ...) are NOT
+# imported at runtime - see requirements-pipeline.txt for those.
+#
+# Pinned to the versions validated locally (Python 3.11, conda env
+# georgia-sar) so the Cloud build is reproducible. If a future rebuild fails
+# because a pin has no wheel for the Cloud's Python, set the Python version in
+# the Streamlit app settings to a matching one (3.11-3.13) or bump that pin.
+streamlit==1.58.0
+pandas==3.0.3
+pyarrow==24.0.0
+geopandas==1.1.3
+shapely==2.1.2
+numpy==2.4.6
+plotly==6.7.0
+folium==0.20.0
+streamlit-folium==0.27.2

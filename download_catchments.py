@@ -2,7 +2,7 @@
 FROM SNOW TO RESERVOIR - HydroBASINS Catchment Delineation
 Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
-Derives the drainage basin (Einzugsgebiet) ABOVE each dam from HydroBASINS
+Derives the drainage basin ABOVE each dam from HydroBASINS
 (HydroSHEDS family, same source as HydroRIVERS). The dam is the pour-point: we
 locate the sub-basin containing it and walk the basin topology upstream
 (HYBAS_ID / NEXT_DOWN), exactly as download_rivers.py walks the river network,
@@ -33,6 +33,7 @@ import zipfile
 from collections import defaultdict, deque
 from pathlib import Path
 
+import requests
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point, box as shp_box
@@ -75,34 +76,34 @@ def download_hybas(level: int) -> Path | None:
         print(f"HydroBASINS lev{level:02d} already present: {existing[0]}")
         return existing[0]
 
-    print(f"Downloading HydroBASINS EU (all levels, ~1 zip)...")
+    print("Downloading HydroBASINS EU (all levels, ~1 zip)...")
     print(f"URL: {HYBAS_URL}")
-    import requests
     try:
-        resp = requests.get(HYBAS_URL, stream=True, timeout=600)
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        downloaded = 0
-        with open(HYBAS_ZIP, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total:
-                    print(f"\r  {downloaded / 1e6:.1f} / {total / 1e6:.1f} MB", end="", flush=True)
-        print(f"\nDownload complete ({downloaded / 1e6:.1f} MB)")
-    except Exception as e:
-        print(f"ERROR downloading HydroBASINS: {e}")
+        response = requests.get(HYBAS_URL, stream=True, timeout=600)
+        response.raise_for_status()
+        total_bytes = int(response.headers.get("content-length", 0))
+        downloaded_bytes = 0
+        with HYBAS_ZIP.open("wb") as out_file:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                out_file.write(chunk)
+                downloaded_bytes += len(chunk)
+                if total_bytes:
+                    print(f"\r  {downloaded_bytes / 1e6:.1f} / {total_bytes / 1e6:.1f} MB",
+                          end="", flush=True)
+        print(f"\nDownload complete ({downloaded_bytes / 1e6:.1f} MB)")
+    except Exception as error:
+        print(f"ERROR downloading HydroBASINS: {error}")
         return None
 
     print("Unpacking...")
-    with zipfile.ZipFile(HYBAS_ZIP, "r") as zf:
-        zf.extractall(STATIC_DIR)
+    with zipfile.ZipFile(HYBAS_ZIP, "r") as archive:
+        archive.extractall(STATIC_DIR)
     HYBAS_ZIP.unlink()
 
-    existing = list(STATIC_DIR.rglob(hybas_shp_glob(level)))
-    if existing:
-        print(f"Shapefile ready: {existing[0]}")
-        return existing[0]
+    shp_paths = list(STATIC_DIR.rglob(hybas_shp_glob(level)))
+    if shp_paths:
+        print(f"Shapefile ready: {shp_paths[0]}")
+        return shp_paths[0]
     print(f"ERROR: lev{level:02d} shapefile not found after unpack.")
     return None
 
@@ -111,55 +112,55 @@ def download_hybas(level: int) -> Path | None:
 # DELINEATION
 # ─────────────────────────────────────────────
 
-def upstream_basins(gdf: gpd.GeoDataFrame, dam_lon: float, dam_lat: float) -> gpd.GeoDataFrame:
+def upstream_basins(basins_gdf: gpd.GeoDataFrame, dam_lon: float, dam_lat: float) -> gpd.GeoDataFrame:
     """Return all sub-basins upstream of (and including) the one at the dam.
 
     HydroBASINS topology: each sub-basin (HYBAS_ID) flows into NEXT_DOWN (0 if
     terminal). We find the sub-basin containing the dam (the catchment outlet),
     then BFS upstream against the flow - the same walk as download_rivers.py.
     """
-    dam = Point(dam_lon, dam_lat)
-    containing = gdf[gdf.contains(dam)]
-    if not containing.empty:
-        outlet = containing.iloc[0]
+    dam_point = Point(dam_lon, dam_lat)
+    containing_gdf = basins_gdf[basins_gdf.contains(dam_point)]
+    if not containing_gdf.empty:
+        outlet = containing_gdf.iloc[0]
     else:
         # Fall back to the nearest sub-basin (projected distance, UTM 38N).
-        gdf_utm = gdf.to_crs("EPSG:32638")
-        dam_utm = gpd.GeoSeries([dam], crs="EPSG:4326").to_crs("EPSG:32638").iloc[0]
-        outlet = gdf.loc[gdf_utm.geometry.distance(dam_utm).idxmin()]
+        basins_utm = basins_gdf.to_crs("EPSG:32638")
+        dam_utm = gpd.GeoSeries([dam_point], crs="EPSG:4326").to_crs("EPSG:32638").iloc[0]
+        outlet = basins_gdf.loc[basins_utm.geometry.distance(dam_utm).idxmin()]
     outlet_id = outlet["HYBAS_ID"]
 
     flows_into = defaultdict(list)
-    for hid, nd in zip(gdf["HYBAS_ID"], gdf["NEXT_DOWN"]):
-        flows_into[nd].append(hid)
+    for basin_id, next_down_id in zip(basins_gdf["HYBAS_ID"], basins_gdf["NEXT_DOWN"]):
+        flows_into[next_down_id].append(basin_id)
 
-    keep = {outlet_id}
+    upstream_ids = {outlet_id}
     queue = deque([outlet_id])
     while queue:
-        cur = queue.popleft()
-        for up in flows_into.get(cur, []):
-            if up not in keep:
-                keep.add(up)
-                queue.append(up)
+        current_id = queue.popleft()
+        for upstream_id in flows_into.get(current_id, []):
+            if upstream_id not in upstream_ids:
+                upstream_ids.add(upstream_id)
+                queue.append(upstream_id)
 
-    return gdf[gdf["HYBAS_ID"].isin(keep)]
+    return basins_gdf[basins_gdf["HYBAS_ID"].isin(upstream_ids)]
 
 
-def catchment_for(gdf: gpd.GeoDataFrame, name: str, dam) -> gpd.GeoDataFrame | None:
+def catchment_for(basins_gdf: gpd.GeoDataFrame, name: str, dam) -> gpd.GeoDataFrame | None:
     """Delineate, dissolve and report the catchment polygon for one AOI."""
     dam_lon, dam_lat = dam
-    basins = upstream_basins(gdf, dam_lon, dam_lat)
+    basins = upstream_basins(basins_gdf, dam_lon, dam_lat)
     if basins.empty:
         print(f"  {name}: no upstream basins found")
         return None
 
-    dissolved = basins.dissolve().reset_index(drop=True)
-    dissolved["aoi"] = name
-    dissolved = dissolved[["aoi", "geometry"]]
+    dissolved_gdf = basins.dissolve().reset_index(drop=True)
+    dissolved_gdf["aoi"] = name
+    dissolved_gdf = dissolved_gdf[["aoi", "geometry"]]
 
-    area_km2 = dissolved.to_crs("EPSG:32638").area.iloc[0] / 1e6
-    minx, miny, maxx, maxy = dissolved.total_bounds
-    contains_dam = dissolved.contains(Point(dam_lon, dam_lat)).iloc[0]
+    area_km2 = dissolved_gdf.to_crs("EPSG:32638").area.iloc[0] / 1e6
+    minx, miny, maxx, maxy = dissolved_gdf.total_bounds
+    contains_dam = dissolved_gdf.contains(Point(dam_lon, dam_lat)).iloc[0]
     clip_box = (round(minx - BBOX_BUFFER_DEG, 4), round(miny - BBOX_BUFFER_DEG, 4),
                 round(maxx + BBOX_BUFFER_DEG, 4), round(maxy + BBOX_BUFFER_DEG, 4))
 
@@ -167,7 +168,7 @@ def catchment_for(gdf: gpd.GeoDataFrame, name: str, dam) -> gpd.GeoDataFrame | N
           f"contains dam: {contains_dam}")
     print(f"    bbox        {tuple(round(v, 4) for v in (minx, miny, maxx, maxy))}")
     print(f"    clip_box    {clip_box}   <- paste into aoi_config.py")
-    return dissolved
+    return dissolved_gdf
 
 
 # ─────────────────────────────────────────────
@@ -175,46 +176,47 @@ def catchment_for(gdf: gpd.GeoDataFrame, name: str, dam) -> gpd.GeoDataFrame | N
 # ─────────────────────────────────────────────
 
 def run_level(level: int, save: bool):
-    shp = download_hybas(level)
-    if not shp:
+    shp_path = download_hybas(level)
+    if not shp_path:
         return
-    print(f"\nLevel {level:02d}: reading {shp.name}...")
-    full = gpd.read_file(shp)
-    if full.crs is None or full.crs.to_epsg() != 4326:
-        full = full.to_crs("EPSG:4326")
+    print(f"\nLevel {level:02d}: reading {shp_path.name}...")
+    full_gdf = gpd.read_file(shp_path)
+    if full_gdf.crs is None or full_gdf.crs.to_epsg() != 4326:
+        full_gdf = full_gdf.to_crs("EPSG:4326")
 
-    parts = []
-    for name, cfg in AOIS.items():
+    catchment_parts = []
+    for name, aoi_cfg in AOIS.items():
         # Pre-filter to a generous window around the dam to speed up contains/BFS.
-        dam_lon, dam_lat = cfg["dam"]
+        dam_lon, dam_lat = aoi_cfg["dam"]
         window = shp_box(dam_lon - 1.5, dam_lat - 1.5, dam_lon + 1.5, dam_lat + 1.5)
-        local = full[full.intersects(window)]
-        catch = catchment_for(local, name, cfg["dam"])
-        if catch is not None:
-            parts.append(catch)
+        local_gdf = full_gdf[full_gdf.intersects(window)]
+        catchment_gdf = catchment_for(local_gdf, name, aoi_cfg["dam"])
+        if catchment_gdf is not None:
+            catchment_parts.append(catchment_gdf)
 
-    if save and parts:
-        combined = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs="EPSG:4326")
-        combined.to_file(CATCHMENTS_GEOJSON, driver="GeoJSON")
-        print(f"\nSaved: {CATCHMENTS_GEOJSON} ({len(combined)} catchments, level {level:02d})")
+    if save and catchment_parts:
+        combined_gdf = gpd.GeoDataFrame(pd.concat(catchment_parts, ignore_index=True),
+                                        crs="EPSG:4326")
+        combined_gdf.to_file(CATCHMENTS_GEOJSON, driver="GeoJSON")
+        print(f"\nSaved: {CATCHMENTS_GEOJSON} ({len(combined_gdf)} catchments, level {level:02d})")
         print("Next: update clip_box in aoi_config.py with the values above, then probe_coverage.py")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="HydroBASINS catchment delineation")
-    ap.add_argument("--level", type=int, default=DEFAULT_LEVEL,
-                    help=f"HydroBASINS level 1-12 (default {DEFAULT_LEVEL})")
-    ap.add_argument("--probe", action="store_true",
-                    help="report area/bbox for levels 7-12 without saving")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description="HydroBASINS catchment delineation")
+    parser.add_argument("--level", type=int, default=DEFAULT_LEVEL,
+                        help=f"HydroBASINS level 1-12 (default {DEFAULT_LEVEL})")
+    parser.add_argument("--probe", action="store_true",
+                        help="report area/bbox for levels 7-12 without saving")
+    args = parser.parse_args()
 
     print("=" * 60)
-    print("HydroBASINS - Catchment Delineation (Einzugsgebiet)")
+    print("HydroBASINS - Catchment Delineation")
     print("=" * 60)
 
     if args.probe:
-        for lev in range(7, 13):
-            run_level(lev, save=False)
+        for level in range(7, 13):
+            run_level(level, save=False)
     else:
         run_level(args.level, save=True)
 

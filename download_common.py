@@ -7,12 +7,12 @@ Common code used by download_hls.py and download_s1.py:
   2. Footprint pre-filter: only dates whose tile footprints cover the AOI
      are downloaded at all (skips partial-coverage dates before any download)
   3. rioxarray clips each tile to the AOI bbox in-memory
-  4. MGRS-tagged GeoTIFF uploaded to Google Drive
+  4. MGRS-tagged GeoTIFF written to the tile store
   5. Full-AOI mosaic + quality filtering happens later in extract_timeseries.py
 
-Drive folder structure:
+Store folder structure:
   OPERA_DSWx/
-    hls/enguri/      <- OPERA_L3_DSWX-HLS_V1  B01_WTR + B09_CLOUD
+    hls/enguri/      <- OPERA_L3_DSWX-HLS_V1  B01_WTR
     hls/zhinvali/
     s1/enguri/       <- OPERA_L3_DSWX-S1_V1   B01_WTR
     s1/zhinvali/
@@ -31,8 +31,6 @@ import earthaccess
 import rioxarray as rxr
 from rasterio.io import MemoryFile
 from dotenv import load_dotenv
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
 from shapely.geometry import Polygon, box as shp_box
 from shapely.ops import unary_union
 from tqdm import tqdm
@@ -44,8 +42,10 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="earthaccess")
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-# AOI definition (bbox / clip_box / DRIVE_PARENT) is centralized in aoi_config.py
-from aoi_config import AOI_LIST as AOIS, AOI_1, AOI_2, DRIVE_PARENT  # noqa: F401
+# AOI definition (bbox / clip_box / DATA_ROOT) is centralized in aoi_config.py
+from aoi_config import AOI_LIST as AOIS, AOI_1, AOI_2, DATA_ROOT  # noqa: F401
+# Local tile store (filesystem under PIPELINE_LOCAL_DIR).
+from storage import get_store, ROOT
 
 DATE_START = "2024-08-01"
 DATE_END   = datetime.today().strftime("%Y-%m-%d")
@@ -76,65 +76,14 @@ S1_REPEAT_DAYS = 12
 def orbit_phase(date_str: str, anchor: str) -> int:
     """12-day repeat phase of a date relative to an anchor (both YYYYMMDD).
     Dates of the same S1 relative orbit share the same phase; phase 0 == anchor."""
-    d = datetime.strptime(date_str, "%Y%m%d").date().toordinal()
-    a = datetime.strptime(anchor, "%Y%m%d").date().toordinal()
-    return (d - a) % S1_REPEAT_DAYS
+    date_ordinal = datetime.strptime(date_str, "%Y%m%d").date().toordinal()
+    anchor_ordinal = datetime.strptime(anchor, "%Y%m%d").date().toordinal()
+    return (date_ordinal - anchor_ordinal) % S1_REPEAT_DAYS
 
 
-# ─────────────────────────────────────────────
-# GOOGLE DRIVE
-# ─────────────────────────────────────────────
-
-def get_drive() -> GoogleDrive:
-    gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("gdrive_credentials.json")
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-    gauth.SaveCredentialsFile("gdrive_credentials.json")
-    return GoogleDrive(gauth)
-
-
-def get_or_create_folder(drive: GoogleDrive, name: str, parent_id: str) -> str:
-    query = (
-        f"title='{name}' and mimeType='application/vnd.google-apps.folder' "
-        f"and '{parent_id}' in parents and trashed=false"
-    )
-    results = drive.ListFile({"q": query}).GetList()
-    if results:
-        return results[0]["id"]
-    folder = drive.CreateFile({
-        "title": name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [{"id": parent_id}],
-    })
-    folder.Upload()
-    return folder["id"]
-
-
-def get_existing_filenames(drive: GoogleDrive, folder_id: str) -> set[str]:
-    """All filenames in a folder, paginated (Drive returns max 100 per page)."""
-    filenames = set()
-    for page in drive.ListFile({
-        "q": f"'{folder_id}' in parents and trashed=false",
-        "maxResults": 1000,
-    }):
-        for f in page:
-            filenames.add(f["title"])
-    return filenames
-
-
-def upload_bytes_to_drive(drive: GoogleDrive, data: bytes, filename: str, folder_id: str):
-    f = drive.CreateFile({
-        "title": filename,
-        "parents": [{"id": folder_id}],
-        "mimeType": "image/tiff",
-    })
-    f.content = io.BytesIO(data)
-    f.Upload()
+# Folder navigation, listing, upload and download of tiles all go through the
+# storage backend (see storage.py): get_store(), store.ensure_folder(...),
+# store.existing_names(...), store.write(...).
 
 
 # ─────────────────────────────────────────────
@@ -142,14 +91,14 @@ def upload_bytes_to_drive(drive: GoogleDrive, data: bytes, filename: str, folder
 # ─────────────────────────────────────────────
 
 def extract_date_from_filename(filename: str) -> str:
-    m = re.search(r"_(\d{8})T", filename)
-    return m.group(1) if m else "unknown"
+    match = re.search(r"_(\d{8})T", filename)
+    return match.group(1) if match else "unknown"
 
 
 def extract_tile_id(filename: str) -> str:
     """MGRS tile ID, e.g. T37TGH. Lets multiple tiles per date coexist."""
-    m = re.search(r"_(T\d{2}[A-Z]{3})_", filename)
-    return m.group(1) if m else "TXXXXX"
+    match = re.search(r"_(T\d{2}[A-Z]{3})_", filename)
+    return match.group(1) if match else "TXXXXX"
 
 
 def extract_layer(filename: str, layers: list[str]) -> str | None:
@@ -161,9 +110,9 @@ def extract_layer(filename: str, layers: list[str]) -> str | None:
 
 def granule_date(granule) -> str:
     for link in granule.data_links():
-        d = extract_date_from_filename(Path(link).name)
-        if d != "unknown":
-            return d
+        date_str = extract_date_from_filename(Path(link).name)
+        if date_str != "unknown":
+            return date_str
     return "unknown"
 
 
@@ -175,24 +124,24 @@ def granule_footprint(granule):
     except Exception:
         return None
 
-    polys = []
-    for gp in geo.get("GPolygons", []):
-        pts = gp.get("Boundary", {}).get("Points", [])
-        coords = [(p["Longitude"], p["Latitude"]) for p in pts]
+    polygons = []
+    for gpolygon in geo.get("GPolygons", []):
+        points = gpolygon.get("Boundary", {}).get("Points", [])
+        coords = [(point["Longitude"], point["Latitude"]) for point in points]
         if len(coords) >= 3:
-            polys.append(Polygon(coords))
-    for br in geo.get("BoundingRectangles", []):
+            polygons.append(Polygon(coords))
+    for rectangle in geo.get("BoundingRectangles", []):
         try:
-            polys.append(shp_box(
-                br["WestBoundingCoordinate"], br["SouthBoundingCoordinate"],
-                br["EastBoundingCoordinate"], br["NorthBoundingCoordinate"],
+            polygons.append(shp_box(
+                rectangle["WestBoundingCoordinate"], rectangle["SouthBoundingCoordinate"],
+                rectangle["EastBoundingCoordinate"], rectangle["NorthBoundingCoordinate"],
             ))
         except Exception:
             continue
 
-    if not polys:
+    if not polygons:
         return None
-    return unary_union(polys)
+    return unary_union(polygons)
 
 
 def covered_dates(granules, aoi: dict) -> set[str]:
@@ -201,22 +150,23 @@ def covered_dates(granules, aoi: dict) -> set[str]:
     aoi_poly = shp_box(*aoi["bbox"])
     aoi_area = aoi_poly.area
 
-    by_date: dict[str, list] = defaultdict(list)
-    for g in granules:
-        by_date[granule_date(g)].append(g)
+    granules_by_date: dict[str, list] = defaultdict(list)
+    for granule in granules:
+        granules_by_date[granule_date(granule)].append(granule)
 
-    keep = set()
-    for date_str, gs in by_date.items():
+    kept_dates = set()
+    for date_str, date_granules in granules_by_date.items():
         if date_str == "unknown":
             continue
-        fps = [fp for fp in (granule_footprint(g) for g in gs) if fp is not None]
-        if not fps:
-            keep.add(date_str)  # cannot judge -> keep (download, let extract filter)
+        footprints = [fp for fp in (granule_footprint(g) for g in date_granules)
+                      if fp is not None]
+        if not footprints:
+            kept_dates.add(date_str)  # cannot judge -> keep (download, let extract filter)
             continue
-        cover = unary_union(fps).intersection(aoi_poly).area / aoi_area
+        cover = unary_union(footprints).intersection(aoi_poly).area / aoi_area
         if cover >= FOOTPRINT_MIN_COVER:
-            keep.add(date_str)
-    return keep
+            kept_dates.add(date_str)
+    return kept_dates
 
 
 def download_and_clip(session, url: str, clip_box: tuple) -> bytes | None:
@@ -226,30 +176,31 @@ def download_and_clip(session, url: str, clip_box: tuple) -> bytes | None:
     from hanging a worker forever (the previous fsspec path had no read timeout)."""
     for attempt in range(MAX_RETRIES):
         try:
-            resp = session.get(url, timeout=HTTP_TIMEOUT)
-            if resp.status_code in RETRYABLE_STATUS:
-                raise IOError(f"HTTP {resp.status_code}")
-            resp.raise_for_status()
+            response = session.get(url, timeout=HTTP_TIMEOUT)
+            if response.status_code in RETRYABLE_STATUS:
+                raise IOError(f"HTTP {response.status_code}")
+            response.raise_for_status()
 
             # Open the downloaded bytes as an in-memory raster, then clip.
-            with MemoryFile(resp.content) as mf:
-                with mf.open() as ds:
-                    da = rxr.open_rasterio(ds, masked=True)
-                    clipped = da.rio.clip_box(
+            with MemoryFile(response.content) as memfile:
+                with memfile.open() as dataset:
+                    raster = rxr.open_rasterio(dataset, masked=True)
+                    clipped_raster = raster.rio.clip_box(
                         minx=clip_box[0], miny=clip_box[1],
                         maxx=clip_box[2], maxy=clip_box[3],
                         crs="EPSG:4326",
                     )
-                    if clipped.size == 0:
+                    if clipped_raster.size == 0:
                         return None
-                    buf = io.BytesIO()
-                    clipped.rio.to_raster(buf, driver="GTiff", compress="deflate")
-                    return buf.getvalue()
-        except Exception as e:
+                    output_buffer = io.BytesIO()
+                    clipped_raster.rio.to_raster(output_buffer, driver="GTiff",
+                                                 compress="deflate")
+                    return output_buffer.getvalue()
+        except Exception as error:
             if attempt < MAX_RETRIES - 1:
                 time.sleep(min(60, 2 ** (attempt + 1)))  # 2,4,8,16,32s
             else:
-                print(f"   ERROR after {MAX_RETRIES} attempts: {Path(url).name}: {e}")
+                print(f"   ERROR after {MAX_RETRIES} attempts: {Path(url).name}: {error}")
                 return None
 
 
@@ -257,18 +208,36 @@ def download_and_clip(session, url: str, clip_box: tuple) -> bytes | None:
 # PIPELINE
 # ─────────────────────────────────────────────
 
-def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
-    # Drive: OPERA_DSWx / hls|s1 / enguri|zhinvali
-    parent_id = get_or_create_folder(drive, DRIVE_PARENT, "root")
-    sub_id    = get_or_create_folder(drive, collection["drive_subfolder"], parent_id)
-    aoi_id    = get_or_create_folder(drive, aoi["name"], sub_id)
+def search_granules(**kwargs):
+    """earthaccess.search_data with retry + exponential backoff. NASA's CMR
+    occasionally returns a transient 5xx ("An Internal Error has occurred.");
+    a few retries keep the unattended weekly CI run from failing on a momentary
+    NASA-side hiccup (the tile download already retries the same way)."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            return earthaccess.search_data(**kwargs)
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                wait = min(60, 2 ** (attempt + 1))  # 2, 4, 8, ...
+                print(f"   CMR search failed ({e}); retry in {wait}s "
+                      f"({attempt + 1}/{MAX_RETRIES})")
+                time.sleep(wait)
+            else:
+                raise
 
-    print(f"  Fetching existing files from Drive...")
-    existing = get_existing_filenames(drive, aoi_id)
-    print(f"  -> {len(existing)} files already in Drive")
+
+def process_aoi(aoi: dict, collection: dict, store):
+    # Layout: OPERA_DSWx / hls|s1 / enguri|zhinvali
+    parent_id = store.ensure_folder(DATA_ROOT, ROOT)
+    sub_id    = store.ensure_folder(collection["subfolder"], parent_id)
+    aoi_id    = store.ensure_folder(aoi["name"], sub_id)
+
+    print("  Fetching existing files from store...")
+    existing = store.existing_names(aoi_id)
+    print(f"  -> {len(existing)} files already in store")
 
     print(f"  Searching {collection['short_name']} {DATE_START} -> {DATE_END}...")
-    granules = earthaccess.search_data(
+    granules = search_granules(
         short_name=collection["short_name"],
         bounding_box=aoi["bbox"],
         temporal=(DATE_START, DATE_END),
@@ -323,11 +292,11 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
         }
         for future in tqdm(as_completed(futures), total=len(futures), desc=f"  {aoi['name']}"):
             out_name, layer = futures[future]
-            data = future.result()
-            if data is None:
+            tile_bytes = future.result()
+            if tile_bytes is None:
                 skipped += 1
                 continue
-            upload_bytes_to_drive(drive, data, out_name, aoi_id)
+            store.write(aoi_id, out_name, tile_bytes)
             uploaded += 1
 
     print(f"  {aoi['name']}: {uploaded} uploaded, {skipped} skipped (empty/error)")
@@ -336,13 +305,13 @@ def process_aoi(aoi: dict, collection: dict, drive: GoogleDrive):
 def run(collection: dict):
     """Entry point used by download_hls.py / download_s1.py."""
     print("=" * 60)
-    print("FROM SNOW TO RESERVOIR - Download to Google Drive")
+    print("FROM SNOW TO RESERVOIR - Download OPERA tiles")
     print(f"Product  : {collection['short_name']}")
     print(f"Layers   : {', '.join(collection['layers'])}")
     print(f"Period   : {DATE_START} -> {DATE_END}")
     print(f"Coverage : footprint pre-filter >= {FOOTPRINT_MIN_COVER*100:.0f}% AOI, "
           f"all MGRS tiles, MGRS-tagged names")
-    print(f"Drive    : {DRIVE_PARENT}/{collection['drive_subfolder']}/<aoi>/")
+    print(f"Store    : {DATA_ROOT}/{collection['subfolder']}/<aoi>/")
     print("=" * 60)
 
     print("\nNASA Earthdata Login...")
@@ -353,12 +322,12 @@ def run(collection: dict):
         earthaccess.login(strategy="interactive", persist=True)
     print("NASA Login OK")
 
-    print("\nGoogle Drive Login...")
-    drive = get_drive()
-    print("Google Drive OK")
+    print("\nOpening tile store...")
+    store = get_store()
+    print("Store ready")
 
     for aoi in AOIS:
         print(f"\nAOI: {aoi['label']}")
-        process_aoi(aoi, collection, drive)
+        process_aoi(aoi, collection, store)
 
-    print("\nDone. Data available in Google Drive.")
+    print("\nDone. Tiles written to the store.")

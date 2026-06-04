@@ -1,0 +1,20 @@
+# Full dependency set for the data pipeline (download + extract + render).
+# Run locally in the conda env `georgia-sar`. The deployed dashboard does NOT
+# need these - its slim runtime deps live in requirements.txt (read by
+# Streamlit Cloud). Install with:  pip install -r requirements-pipeline.txt
+earthaccess
+rioxarray
+rasterio
+tqdm
+python-dotenv
+numpy
+pandas
+pyarrow
+geopandas
+shapely
+scipy
+requests
+streamlit
+plotly
+folium
+streamlit-folium

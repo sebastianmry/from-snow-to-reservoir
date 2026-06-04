@@ -1,5 +1,5 @@
 """
-FROM SNOW TO RESERVOIR - Download OPERA DSWx-HLS to Google Drive
+FROM SNOW TO RESERVOIR - Download OPERA DSWx-HLS to the tile store
 Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
 
 Optical water + snow/ice product (Landsat-8/9 + Sentinel-2).
@@ -14,7 +14,7 @@ from download_common import run
 HLS = {
     "short_name":      "OPERA_L3_DSWX-HLS_V1",
     "layers":          ["B01_WTR"],
-    "drive_subfolder": "hls",
+    "subfolder":       "hls",
 }
 
 if __name__ == "__main__":
