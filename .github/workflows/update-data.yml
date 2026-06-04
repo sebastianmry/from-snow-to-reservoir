@@ -59,6 +59,16 @@ jobs:
           restore-keys: |
             opera-store-
 
+      # urs.earthdata.nasa.gov is dual-stack (A + AAAA), but GitHub-hosted runners
+      # have an IPv6 interface with no IPv6 egress. Linux prefers IPv6, so the
+      # connection goes to the AAAA address and dies with "[Errno 101] Network is
+      # unreachable" instead of falling back to IPv4. Disable IPv6 so all traffic
+      # uses the reachable IPv4 route.
+      - name: Force IPv4 (runner has no IPv6 egress to Earthdata)
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+
       - name: Download new OPERA tiles
         run: |
           python download_s1.py

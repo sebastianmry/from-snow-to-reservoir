@@ -20,6 +20,7 @@ Store folder structure:
 
 import io
 import re
+import sys
 import time
 import warnings
 from collections import defaultdict
@@ -317,7 +318,18 @@ def run(collection: dict):
     print("\nNASA Earthdata Login...")
     try:
         earthaccess.login(strategy="netrc")
-    except Exception:
+    except Exception as login_error:
+        # Without a terminal (e.g. the weekly CI run) the interactive prompt has
+        # no stdin and dies with a cryptic EOFError, masking the real cause. Only
+        # fall back to it when a real terminal is attached; otherwise re-raise the
+        # actual login/network error so the failure is diagnosable.
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                "Earthdata login via .netrc failed and no terminal is available "
+                "for an interactive prompt. Check the EARTHDATA_USERNAME / "
+                "EARTHDATA_PASSWORD secrets and that urs.earthdata.nasa.gov is "
+                f"reachable. Original error: {login_error}"
+            ) from login_error
         print("  No _netrc found - enter credentials:")
         earthaccess.login(strategy="interactive", persist=True)
     print("NASA Login OK")

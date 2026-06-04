@@ -124,7 +124,7 @@ EPSG:4326-Mosaik verschmolzen, exakt auf die clip_box zugeschnitten und gepaddet
   (`derive_reservoir.py`) + `reservoir_area_km2` in den S1-Parquets, Orbit fest verankert.
   Details siehe Abschnitt "Reservoir-Polygone + Fuellwerte" unten.
 
-### Catchment-AOI: CODE FERTIG (2026-06-02), Re-Download durch User ausstehend
+### Catchment-AOI: FERTIG (2026-06-02), Re-Download + Neuberechnung gelaufen
 Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
 - **Schritt 0 (fertig):** `aoi_config.py` als Single Source of Truth (clip_box, dam, s1_anchor,
   Display-Felder). download_common / extract_timeseries / derive_reservoir / download_rivers /
@@ -170,11 +170,10 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   CATCHMENT-relativ (Nenner = Catchment-Pixel, sonst würde die große Box alles unter die
   90/95%-Schwelle drücken). Backward-kompatibel (ohne catchments.geojson exakt altes Verhalten).
   app.py: Catchment-Kontur statt bbox auf der Karte. AppTest beide AOIs 0 Exceptions.
-- **Schritte 4/5 (AUSSTEHEND, User fährt selbst):** (a) Store `OPERA_DSWx/{hls,s1}/{enguri,
-  zhinvali}/` manuell leeren (alte Clips passen nicht zur neuen Box; KEIN Lösch-Skript im Repo),
-  (b) download_s1.py + download_hls.py (neue MGRS-Kacheln), (c) derive_reservoir.py +
-  extract_timeseries.py --refresh. Mehrstündig. Danach: reservoir_area_km2 + Schnee/Gletscher
-  neu, Doku-Zahlen finalisieren (README markiert die alten 9,86/11,19 km² als "neu zu berechnen").
+- **Schritte 4/5 (GELAUFEN):** Store geleert, download_s1.py + download_hls.py (neue MGRS-
+  Kacheln), derive_reservoir.py + extract_timeseries.py --refresh durch. Ergebnis: Parquets neu,
+  reservoir_area_km2 + Schnee/Gletscher catchment-relativ neu berechnet. Final-Zahlen siehe
+  "Reservoir-Flächen final (Catchment-AOI)" unten (Enguri 9,32 / Zhinvali 11,20 km²).
 - DEM-Delineation war Fallback, NICHT nötig (HydroBASINS lev12 ausreichend).
 
 ### Wissenschaftliche Optimierungen (2026-06-02, GELAUFEN + verifiziert)
@@ -227,7 +226,7 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   (Bewölkung limitiert; 502-Lücken nachgeholt, brachten 0 neue Tage = waren cloudy/partiell).
   Parquets neu, App verifiziert (0 Exceptions).
 
-### Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau - CODE FERTIG (2026-06-03), Render-Lauf durch User ausstehend
+### Raster-Overlay (TIFs als PNG) im Dashboard mit Zeit-Durchschau - FERTIG (2026-06-03), gerendert + committet
 - `render_overlays.py` umgesetzt: laeuft EINMAL nach extract_timeseries.py, liest pro
   Sensor (s1/hls) die Datumsliste aus dem fertigen Parquet (Szenen = exakt die Charts),
   laedt die Tiles aus dem Store, mosaikiert (mosaic_tiles), rechnet auf max 900 px herunter
@@ -243,8 +242,8 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   Reservoir-Umriss). KEIN Rasterrechnen zur Laufzeit. Ohne gerenderte Overlays zeigt
   die Sektion einen Hinweis (AppTest verifiziert, 0 Exceptions). load_overlay_index /
   load_overlay_uri @st.cache_data.
-- AUSSTEHEND (User faehrt selbst): `python render_overlays.py` (Store-Zugriff,
-  mehrere Minuten). Danach PNGs ins Repo committen, damit Streamlit Cloud sie hat.
+- GELAUFEN: `python render_overlays.py` durch, alle 202 PNGs in static_data/overlays/
+  ins Repo committet (enguri 51 s1 / 48 hls, zhinvali 53 / 50) -> Streamlit Cloud hat sie.
 - (urspruenglicher Plan, weiterhin gueltig) User-Wunsch: BEIDE Sensoren S1 (Wasser)
   UND HLS (Schnee/Eis), nicht nur S1.
 - Karte soll die eigentlichen GeoTIFFs anzeigen und gestylt darstellen, sodass man per Datums-Slider durch die Szenen blaettern und die Veraenderungen ueber die Zeit sehen kann (Schnee/Eis/Wasser im Jahresverlauf).
@@ -254,7 +253,7 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
 
 **Implementierungs-Ansatz (Stabilitaet):** Vorrendern statt live rechnen. Ein separates `render_overlays.py` (laeuft einmal nach `extract_timeseries.py`) erzeugt pro gefiltertem Datum ein kleines, eingefaerbtes PNG nach `static_data/overlays/{aoi}/{date}.png` (+ Bounds-Sidecar). Die App laedt nur fertige PNGs via `folium.ImageOverlay` - kein Rasterrechnen zur Laufzeit, stabil und fluessig durchblaetterbar. Hebel: Aufloesung reduzieren, nur gefilterte Tage rendern, `@st.cache_data`, batch-weise mit Speicherfreigabe, PNGs lokal (kein Store-Zugriff zur Laufzeit).
 
-### Reservoir-Polygone + Fuellwerte (CODE FERTIG, Lauf ausstehend)
+### Reservoir-Polygone + Fuellwerte (FERTIG, gelaufen + verifiziert)
 - **Problem geklaert:** HydroLAKES sitzt zwar korrekt am Damm (Enguri 0,58 km, Zhinvali
   0,34 km), unterschaetzt aber stark (Enguri 4,86 km² geodaetisch vs. real ~13 km² - erfasst
   nur das untere Becken, nicht die langen Talarme). Es gibt KEINEN besseren HydroLAKES-
@@ -302,8 +301,11 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
 - **app.py FERTIG (2026-06-01):** `load_reservoir()` liest reservoirs.geojson; Footprint-Polygon
   auf der Folium-Karte (blau, Flaechen-Tooltip) + Caption; Wasser-Chart zeigt reservoir_area_km2
   als Hauptlinie und AOI-water_km2 als blasse Referenz; KPI-Kachel zeigt Stausee-Flaeche.
-  Headless mit streamlit AppTest geprueft (beide AOIs, 0 Exceptions). Bekannt/offen: das ganze
-  Dashboard nutzt noch `use_container_width` (deprecated, nur Warnung) - spaeter modernisieren.
+  Headless mit streamlit AppTest geprueft (beide AOIs, 0 Exceptions). Hinweis: die Plotly-Charts
+  nutzen `width="stretch"` (Streamlit-Core-Migration erledigt). Die zwei `st_folium`-Aufrufe nutzen
+  weiterhin `use_container_width` - das ist der EIGENE Parameter der streamlit-folium-Komponente
+  (kein deprecateter Streamlit-Core-Parameter), `width` erwartet dort einen Pixel-Integer. Also
+  korrekt so, kein offener Punkt.
 
 ### Wasserpegel (DEM/INFLOS) - GETESTET und VERWORFEN (2026-06-01)
 Der INFLOS-Pegelansatz (S1-Uferlinie x Copernicus DEM GLO-30) wurde implementiert,
@@ -359,6 +361,14 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
   Per-Date-Cache haelt die Laeufe inkrementell. Einziges Secret: `EARTHDATA_USERNAME` /
   `EARTHDATA_PASSWORD`. `search_granules()` retryt CMR-5xx (NASA-seitige transiente
   Fehler) 3x mit Backoff.
+- **CI-Stolperstein IPv6 (gefixt 2026-06-04):** urs.earthdata.nasa.gov ist dual-stack
+  (A + AAAA). GitHub-Hosted-Runner haben eine IPv6-Schnittstelle aber kein IPv6-Egress;
+  Linux bevorzugt IPv6 -> Login lief auf die AAAA-Adresse und starb mit "[Errno 101]
+  Network is unreachable" (kein Fallback auf IPv4). Fix: Workflow-Step "Force IPv4"
+  deaktiviert IPv6 (sysctl) vor dem Download. Zusaetzlich haertet download_common.run()
+  den Login: ohne TTY (CI) KEIN interaktiver Fallback mehr (der starb mit EOFError am
+  input()-Prompt und verdeckte den echten Fehler), sondern klare RuntimeError-Meldung.
+  requirements-pipeline.txt jetzt gepinnt (wie requirements.txt) -> reproduzierbarer Build.
 
 ### ERLEDIGT: Code-/Doku-Qualitaetspass (2026-06-04)
 - **Coding-Styleguide ueber alle 13 Skripte** angewandt: explizite Namen (kein bare
