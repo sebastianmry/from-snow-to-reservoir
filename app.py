@@ -961,7 +961,10 @@ with map_col:
     st.caption(" · ".join(captions))
 
     aoi_map = build_map(aoi, rivers, glaciers, reservoir, catchment)
-    st_folium(aoi_map, height=430, use_container_width=True)
+    # returned_objects=[] stops st_folium from sending map-interaction data back on
+    # every pan/zoom/scroll, which otherwise triggers a Streamlit rerun and the
+    # transient dimming overlay. The return value is unused here anyway.
+    st_folium(aoi_map, height=430, use_container_width=True, returned_objects=[])
 
 with chart_col:
     st.subheader("Time series")
@@ -1014,7 +1017,7 @@ else:
             zoom_to_reservoir=(sensor == "s1"),
         )
         st_folium(overlay_map, height=430, use_container_width=True,
-                  key=f"overlay_{aoi['key']}_{sensor}")
+                  key=f"overlay_{aoi['key']}_{sensor}", returned_objects=[])
     render_overlay_legend(sensor)
 
 # ── Data tables (collapsible) ─────────────────
