@@ -535,15 +535,33 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     return fmap
 
 
+def _reservoir_zoom_bounds(reservoir: gpd.GeoDataFrame, pad: float = 0.5) -> list | None:
+    """Padded [[lat_min, lon_min], [lat_max, lon_max]] around the reservoir, so the
+    water scene browser opens zoomed onto the dam instead of the whole catchment.
+    pad is a fraction of the footprint span added on every side."""
+    if reservoir is None or reservoir.empty:
+        return None
+    min_lon, min_lat, max_lon, max_lat = reservoir.total_bounds
+    # Guard against a degenerate (near-point) footprint with a small floor.
+    dlon = max((max_lon - min_lon) * pad, 0.01)
+    dlat = max((max_lat - min_lat) * pad, 0.01)
+    return [[min_lat - dlat, min_lon - dlon], [max_lat + dlat, max_lon + dlon]]
+
+
 def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
                       catchment: gpd.GeoDataFrame | None,
                       reservoir: gpd.GeoDataFrame | None,
-                      glaciers: gpd.GeoDataFrame | None = None) -> folium.Map:
+                      glaciers: gpd.GeoDataFrame | None = None,
+                      zoom_to_reservoir: bool = False) -> folium.Map:
     """Light-weight map for the scene browser: basemap, catchment contour, the
     chosen pre-rendered raster, and (for HLS) the RGI glacier outlines so glaciers
-    are always clearly bounded - whether currently snow-covered or bare ice."""
+    are always clearly bounded - whether currently snow-covered or bare ice.
+
+    For the S1 water scenes (zoom_to_reservoir), the view opens framed on the
+    reservoir footprint, since that is where the radar water signal lives."""
     fmap = folium.Map(tiles="CartoDB positron")
-    fmap.fit_bounds(bounds)
+    res_bounds = _reservoir_zoom_bounds(reservoir) if zoom_to_reservoir else None
+    fmap.fit_bounds(res_bounds if res_bounds else bounds)
 
     if catchment is not None and not catchment.empty:
         folium.GeoJson(
@@ -668,9 +686,10 @@ def chart_water(timeseries_df: pd.DataFrame) -> go.Figure:
         hovermode="x unified",
         plot_bgcolor="white",
         paper_bgcolor="white",
+        font=dict(family=FONT_STACK, color="#2c3e50"),
         margin=dict(t=40, b=20, l=60, r=20),
-        xaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
-        yaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
+        xaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
+        yaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
     )
     return fig
 
@@ -719,10 +738,11 @@ def chart_snow(timeseries_df: pd.DataFrame) -> go.Figure:
         hovermode="x unified",
         plot_bgcolor="white",
         paper_bgcolor="white",
+        font=dict(family=FONT_STACK, color="#2c3e50"),
         margin=dict(t=40, b=20, l=60, r=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
-        xaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
-        yaxis=dict(showgrid=True, gridcolor="#f0f0f0"),
+        xaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
+        yaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
     )
     return fig
 
@@ -734,6 +754,50 @@ def chart_snow(timeseries_df: pd.DataFrame) -> go.Figure:
 st.set_page_config(
     page_title="From Snow to Reservoir",
     layout="wide",
+)
+
+# Shared font for the whole dashboard, so the dark shell, the light map and the
+# charts read as one typographic system (Arimo, per the design guide).
+FONT_STACK = "'Arimo', 'Helvetica Neue', Arial, sans-serif"
+
+# ── Theme polish ─────────────────────────────
+# Additive CSS only: a single typographic system, a clear heading hierarchy, and
+# the KPI tiles / light data panels framed as deliberate cards on the dark shell
+# (Bach et al.: consistency, grouped layout, no visual clutter).
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Arimo:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"], .stApp, button, input, textarea, select {
+        font-family: 'Arimo', 'Helvetica Neue', Arial, sans-serif;
+    }
+
+    /* Heading hierarchy: distinct title, calmer section heads. */
+    .stApp h1 { font-weight: 700; letter-spacing: -0.01em; }
+    .stApp h2, .stApp h3 { font-weight: 600; letter-spacing: -0.005em; }
+
+    /* KPI tiles framed as grouped cards instead of floating on the dark ground. */
+    div[data-testid="stMetric"] {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 12px;
+        padding: 14px 18px;
+    }
+    div[data-testid="stMetric"] label { opacity: 0.75; }
+
+    /* Light data panels (folium map + plotly charts) as crisp cards, so the
+       bright surfaces read as intentional content, not stray white holes. */
+    iframe { border-radius: 12px; }
+    div[data-testid="stPlotlyChart"] {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 6px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.title("From Snow to Reservoir")
@@ -814,6 +878,9 @@ with col1:
             f"{latest_reservoir:.2f} km²",
             delta=f"Max: {max_reservoir:.2f} km²",
             delta_color="off",
+            help="Reservoir footprint from DSWx-S1 radar (cloud independent). "
+                 "Current = most recent valid date in the selected range; max over "
+                 "the same range.",
         )
     elif latest_s1 is not None:
         st.metric(
@@ -821,6 +888,8 @@ with col1:
             f"{latest_s1['water_km2']:.2f} km²",
             delta=f"Max: {max_water:.2f} km²",
             delta_color="off",
+            help="AOI-wide open water from DSWx-S1 radar (includes rivers). "
+                 "Current = most recent date in the selected range.",
         )
     else:
         st.metric("Water area (S1, current)", "No data")
@@ -832,13 +901,20 @@ with col2:
             f"{latest_snow:.0f} km²",
             delta=f"Max: {max_snow:.0f} km²",
             delta_color="off",
+            help="Seasonal snow plus snow lying on glaciers, from optical HLS. "
+                 "Coverage corrected where available, so partial scenes are not "
+                 "biased low.",
         )
     else:
         st.metric("Total snow (HLS, current)", "No data")
 
 with col3:
     if latest_hls is not None:
-        st.metric("Bare glacier ice", f"{latest_hls['bare_ice_km2']:.1f} km²")
+        st.metric(
+            "Bare glacier ice", f"{latest_hls['bare_ice_km2']:.1f} km²",
+            help="Exposed (snow free) glacier ice on the most recent HLS scene in "
+                 "the selected range.",
+        )
     else:
         st.metric("Bare glacier ice", "No data")
 
@@ -848,6 +924,7 @@ with col4:
         f"{len(df_s1)} S1 (water)",
         delta=f"{len(hls_df)} HLS (snow)",
         delta_color="off",
+        help="Number of acquisitions in the selected time range, by sensor.",
     )
 
 st.divider()
@@ -934,6 +1011,7 @@ else:
         overlay_map = build_overlay_map(
             aoi, overlay_uri, overlay_index["bounds"], catchment, reservoir,
             glaciers=glaciers_clipped,
+            zoom_to_reservoir=(sensor == "s1"),
         )
         st_folium(overlay_map, height=430, use_container_width=True,
                   key=f"overlay_{aoi['key']}_{sensor}")
