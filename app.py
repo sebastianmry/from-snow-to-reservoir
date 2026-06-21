@@ -496,16 +496,21 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             folium.Marker(
                 location=list(anchor),
                 icon=folium.DivIcon(
-                    icon_size=(150, 18),
-                    icon_anchor=(75, 9),
+                    icon_size=(170, 20),
+                    icon_anchor=(85, 10),
                     html=(
-                        # Plain label, no background box: a white text halo keeps
-                        # it legible over the blue reservoir fill instead.
-                        '<div style="font-size:9px;font-weight:600;color:#000000;'
+                        # Hydrographic label convention (Imhof/Brewer): italic,
+                        # lightly letter-spaced, in the deep-water blue of the
+                        # reservoir outline (#0b3d66) so the name reads as a water
+                        # feature and stays consistent with the fill. A soft white
+                        # halo keeps it legible, no background box.
+                        '<div style="font-size:10px;font-weight:600;font-style:italic;'
+                        'letter-spacing:0.6px;color:#0b3d66;'
                         "font-family:'Montserrat','Helvetica Neue',Arial,sans-serif;"
                         'text-align:center;white-space:nowrap;'
-                        'text-shadow:-1px -1px 1px #fff, 1px -1px 1px #fff, '
-                        '-1px 1px 1px #fff, 1px 1px 1px #fff;">'
+                        'text-shadow:0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, '
+                        '-1px 0 1px #fff, 1px 0 1px #fff, 0 -1px 1px #fff, '
+                        '0 1px 1px #fff;">'
                         f'{name} Reservoir</div>'
                     ),
                 ),
@@ -535,7 +540,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     return fmap
 
 
-def _reservoir_zoom_bounds(reservoir: gpd.GeoDataFrame, pad: float = 0.5) -> list | None:
+def _reservoir_zoom_bounds(reservoir: gpd.GeoDataFrame, pad: float = 0.2) -> list | None:
     """Padded [[lat_min, lon_min], [lat_max, lon_max]] around the reservoir, so the
     water scene browser opens zoomed onto the dam instead of the whole catchment.
     pad is a fraction of the footprint span added on every side."""
