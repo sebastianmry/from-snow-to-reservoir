@@ -407,3 +407,25 @@ getestet und dann **bewusst wieder entfernt** - keine Pegelstaende im Projekt.
 - `tqdm` — Fortschrittsanzeige
 - Tile-Store: lokales Filesystem unter `PIPELINE_LOCAL_DIR` (Default `./opera_local`)
 - Conda-Environment: `georgia-sar`
+
+---
+
+## 5. Geplante Erweiterungen (offene TODOs)
+
+Zwei in der Projektskizze als erwartete Ergebnisse genannte Features stehen noch aus.
+Die Datengrundlage liegt vollstaendig vor (beide Parquet-Zeitreihen), beide sind also
+ohne neuen Download umsetzbar.
+
+- **TODO: Korrelationsplot Schneeschmelze vs. Talsperren-Fuellung.** Cross-Correlation
+  zwischen der coverage-korrigierten Schneeflaeche (`seasonal_snow_km2_est`, HLS) und der
+  Reservoir-Flaeche (`reservoir_area_km2`, S1), um die Lag-Zeit zwischen Schmelzbeginn und
+  Pegelanstieg zu schaetzen. Umsetzung als eigene Chart-/Tab-Sektion im Dashboard.
+- **TODO: AI-Saisonreport (Claude API).** Automatisch generierte Anomalie- und
+  Saisonbeschreibung aus den Zeitreihen bei jedem Update (anthropic SDK). Eigene
+  Dashboard-Sektion, Text aus den aktuellen Statistiken statt manuell.
+
+Bewusst gegenueber der Skizze geaendert (kein TODO, sondern begruendeter Pivot): absolutes
+Speichervolumen entfaellt (keine Bathymetrie in frei verfuegbaren DEMs, GLO-30 erfasst den
+See als flache Wasseroberflaeche), stattdessen wird die Flaeche als Speicherindikator
+ueberwacht. Schnee/Gletscher kommen aus HLS statt aus Sentinel-2 NDWI, weil optische
+Klassifikation Wasser ueber Gebirgsschatten ueberdetektiert.
