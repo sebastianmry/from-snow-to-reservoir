@@ -108,6 +108,8 @@ Before download, the union of the tile footprints per date is checked against th
 | Catchment coverage (S1) | at least 90% | Removes partial orbits; only full-area scenes enter the series. |
 | Reservoir coverage (S1) | at least 95% of the footprint | Otherwise `reservoir_area_km2` and `water_km2` are NaN (no false drawdown from NoData over the lake). |
 
+A compact, standalone summary of all cleaning and QA steps is in [`DATA_CLEANING.md`](DATA_CLEANING.md).
+
 ### Water from S1, snow from HLS
 
 Optical HLS strongly over detects water (terrain shadow and ice are misclassified as water), even on cloud-free days. Therefore: **water area comes only from S1** (radar, cloud-independent, robust), **snow and glaciers come from HLS**. The two sensors complement each other: HLS for the snow signal, S1 for the gap-free water time series.
