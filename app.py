@@ -381,12 +381,23 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     center_lat = (min_lat + max_lat) / 2
     center_lon = (min_lon + max_lon) / 2
 
+    # zoomSnap=0.25 lets fit_bounds land on a fractional zoom level. Without it,
+    # Leaflet only snaps to integer zooms, so an elongated AOI like Enguri is
+    # stuck between "one level too far out" and "one level too close". Quarter
+    # steps give a fit that actually frames it.
     fmap = folium.Map(
         location=[center_lat, center_lon],
         tiles="CartoDB positron",
+        zoomSnap=0.25,
     )
-    # Fit exactly to the AOI so it is always centered regardless of AOI size
-    fmap.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+    # Fit to the AOI. With zoomSnap=0.25 this lands on a fractional zoom, so the
+    # frame can sit between integer levels. A small inward shrink frames the
+    # catchment a touch closer than the exact bounds.
+    shrink = 0.05
+    pad_lat = (max_lat - min_lat) * shrink
+    pad_lon = (max_lon - min_lon) * shrink
+    fmap.fit_bounds([[min_lat + pad_lat, min_lon + pad_lon],
+                     [max_lat - pad_lat, max_lon - pad_lon]])
 
     # Load Montserrat so the on-map reservoir label matches the CartoDB Positron
     # basemap typography (its place labels use the Montserrat family).
@@ -504,7 +515,7 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
                         # reservoir outline (#0b3d66) so the name reads as a water
                         # feature and stays consistent with the fill. A soft white
                         # halo keeps it legible, no background box.
-                        '<div style="font-size:10px;font-weight:600;font-style:italic;'
+                        '<div style="font-size:10px;font-weight:600;'
                         'letter-spacing:0.6px;color:#0b3d66;'
                         "font-family:'Montserrat','Helvetica Neue',Arial,sans-serif;"
                         'text-align:center;white-space:nowrap;'
@@ -564,9 +575,19 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
 
     For the S1 water scenes (zoom_to_reservoir), the view opens framed on the
     reservoir footprint, since that is where the radar water signal lives."""
-    fmap = folium.Map(tiles="CartoDB positron")
+    # zoomSnap=0.25 (fractional zoom) so the fit can frame between integer levels.
+    fmap = folium.Map(tiles="CartoDB positron", zoomSnap=0.25)
     res_bounds = _reservoir_zoom_bounds(reservoir) if zoom_to_reservoir else None
-    fmap.fit_bounds(res_bounds if res_bounds else bounds)
+    if res_bounds:
+        fmap.fit_bounds(res_bounds)
+    else:
+        # HLS scenes: shrink the fit bounds slightly so the catchment frames a
+        # touch closer than the full overlay extent.
+        (lat_min, lon_min), (lat_max, lon_max) = bounds
+        pad_lat = (lat_max - lat_min) * 0.06
+        pad_lon = (lon_max - lon_min) * 0.06
+        fmap.fit_bounds([[lat_min + pad_lat, lon_min + pad_lon],
+                         [lat_max - pad_lat, lon_max - pad_lon]])
 
     if catchment is not None and not catchment.empty:
         folium.GeoJson(
