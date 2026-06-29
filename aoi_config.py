@@ -46,8 +46,13 @@ AOIS = {
         # UNDER-reads the lake in autumn (~6.5 km2) while phases 6 (20240829) and 0
         # (20240823) both read a stable ~7.3 km2 - i.e. phase 7's dip is a geometry
         # artefact, not real (Enguri is a deep gorge, ~flat area). Phase 6 gives the
-        # cleaner/more stable reservoir series with full coverage. Coverage != lake
-        # measurement quality.
+        # cleaner/more stable reservoir series. Coverage != lake measurement quality.
+        # Phase 6's SAR swath misses the eastern Svaneti headwaters on ~33 of 54
+        # cycles (catchment cov ~59%) but still fully images the western reservoir
+        # (~100%). The reservoir-decoupled gate in extract_timeseries.py therefore
+        # KEEPS those cycles for the lake series (reservoir_area_km2; their basin-
+        # wide water_km2 is NaN), so phase 6 yields BOTH the correct lake reading
+        # AND the full ~54-date reservoir series - no anchor change needed.
         "s1_anchor": "20240829",
         "display_label": "Enguri (Western Georgia)",
         "center": (42.884, 42.753),

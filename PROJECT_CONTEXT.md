@@ -10,10 +10,19 @@ Zentrale Definition in `aoi_config.py` (Single Source of Truth, alle Skripte imp
 ### AOI 1: Enguri (West-Georgien / Svaneti)
 - clip_box (= Catchment-bbox + 0.02° Puffer): (41.8467, 42.7294, 43.1658, 43.2783)
 - Catchment-Fläche: ~3 139 km² (HydroBASINS lev12, konvergiert ab lev09)
-- Dam / Pour-Point: (42.032, 42.753); s1_anchor 20240829 (Phase 6, 50 Szenen). Per Coverage war
+- Dam / Pour-Point: (42.032, 42.753); s1_anchor 20240829 (Phase 6, 51 Szenen). Per Coverage war
   zunaechst Phase 7 (20240830) gewaehlt, aber der Reservoir-Praezisions-Check (--compare-orbit)
   zeigte Phase 7 unter-detektiert den See im Herbst (~6.5 vs stabile ~7.3 bei Phase 6 & 0) ->
   auf den stabileren Phase-6-Orbit gewechselt. Coverage != Mess-Qualitaet fuers Reservoir.
+  RESERVOIR-ENTKOPPELTES GATING (Pivot, beide AOIs): Phase 6's SAR-Swath verfehlt auf ~33/54
+  Zyklen die oestlichen Svaneti-Quellgebiete (Catchment-Coverage ~59%), bildet den westlichen
+  See aber voll ab (~100%). extract_timeseries.py behaelt ein Datum jetzt, wenn ENTWEDER
+  Catchment-Coverage >= S1_MIN_VALID_PCT (90%) ODER reservoir_valid_pct >= RESERVOIR_MIN_COVER
+  (95%); auf den Catchment-partiellen Tagen wird das Becken-weite water_km2 = NaN gesetzt, der
+  See-Wert bleibt. So liefert Phase 6 die KORREKTE Seeflaeche UND die volle ~51-Tage-Reihe
+  (vorher ~21 nach hartem Catchment-Filter), ohne Anchor-Wechsel. Phase-7-Coverage war zwar
+  solide (probe --sample 14 --only-phase 7: min 97.4%, mean 99.2%), aber Mess-Qualitaet schlug
+  Coverage. Gilt global (RESERVOIR_MIN_COVER), daher auch fuer Zhinvali konsistent.
 - Fokus: starke Vergletscherung Svaneti; neue Box reicht bis ~43.17 E (östliche Quellflüsse
   Ushguli, die die alte Box bei maxx=42.80 abschnitt).
 
@@ -222,7 +231,8 @@ Umbau von Box-AOIs auf Einzugsgebiete (HydroBASINS). Status der 7 Schritte:
   Hub ~2.4 km²), Enguri ~2:1 (nahe Rauschgrenze -> Fläche ist schwacher Proxy, empirisch bestätigt).
 - **Reservoir-Flächen final (Catchment-AOI):** Footprint Enguri 9.32 km², Zhinvali 11.20 km².
   Zhinvali-Reservoir klarer Jahresgang ~8.5 (Frühjahr) -> ~11 (Herbst); Enguri flach ~7.0-7.6.
-- Stand Daten: S1 komplett (enguri Phase 6 50 Tage, zhinvali 52). HLS Enguri 47 / zhinvali 49 Tage
+- Stand Daten: S1 komplett (enguri Phase 6 51 Tage via Reservoir-entkoppeltes Gating, zhinvali 52).
+  HLS Enguri 47 / zhinvali 49 Tage
   (Bewölkung limitiert; 502-Lücken nachgeholt, brachten 0 neue Tage = waren cloudy/partiell).
   Parquets neu, App verifiziert (0 Exceptions).
 
@@ -423,6 +433,13 @@ ohne neuen Download umsetzbar.
 - **TODO: AI-Saisonreport (Claude API).** Automatisch generierte Anomalie- und
   Saisonbeschreibung aus den Zeitreihen bei jedem Update (anthropic SDK). Eigene
   Dashboard-Sektion, Text aus den aktuellen Statistiken statt manuell.
+- **TODO: Screenshots ins Repo.** Am Ende ein paar Dashboard-Screenshots (Karte,
+  Zeitreihen, Szenenbrowser) unter z.B. `docs/screenshots/` ablegen und im README
+  einbinden, fuer eine schnelle visuelle Vorschau ohne Live-App.
+
+Hinweis zur Struktur: One-Pager bleibt bewusst (kohaerente Single-Story je AOI,
+Bach et al.). Erst wenn Korrelationsplot + AI-Report dazukommen und die Seite lang
+wird, auf Tabs oder eine zweite Seite pro Thema gehen, nicht auf mehr Spalten.
 
 Bewusst gegenueber der Skizze geaendert (kein TODO, sondern begruendeter Pivot): absolutes
 Speichervolumen entfaellt (keine Bathymetrie in frei verfuegbaren DEMs, GLO-30 erfasst den

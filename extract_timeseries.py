@@ -69,15 +69,21 @@ MAX_CLOUD_PCT  = 30.0
 # residual coverage bias on the recovered days is removed by the *_est columns
 # (snow normalized to the observed area, scaled to the full basin).
 MIN_VALID_PCT  = 85.0
-# S1 (SAR): since we anchor to one relative orbit, require full AOI coverage
-# already at extract time. Partial orbits (e.g. swath-edge scenes like the 79%
-# 2025-09-17 Enguri date) are skipped here instead of only later in the dedup.
+# S1 (SAR): we anchor to one relative orbit. A date enters the series if EITHER
+# the whole catchment is fully imaged (>= S1_MIN_VALID_PCT) OR the reservoir itself
+# is fully observed (>= RESERVOIR_MIN_COVER). The catchment-full path keeps the
+# AOI-wide water_km2; the reservoir-only path recovers the anchor-orbit cycles
+# whose SAR swath misses the eastern Svaneti headwaters but still fully image the
+# western lake (catchment cov ~59%, reservoir cov ~100%) - those carry a valid
+# reservoir_area_km2 while their water_km2 is NaN'd (not basin-comparable).
+# Genuinely partial orbits that also miss the lake are still skipped.
 S1_MIN_VALID_PCT  = 90.0
 S1_REPEAT_DAYS    = 12    # Sentinel-1 ground-track repeat cycle (orbit dedup)
-S1_FULL_COVER_PCT = 90.0  # orbit counts as full-AOI coverage (dedup partial filter)
-# Reservoir guard: if less than this % of the reservoir footprint itself has valid
-# pixels on a date, reservoir_area_km2 is set to NaN (the date is under-observed
-# over the lake, so a low value would be a false drawdown, not a real one).
+S1_FULL_COVER_PCT = 90.0  # catchment-full threshold (dedup partial filter; same value)
+# Reservoir guard / gate: if less than this % of the reservoir footprint itself has
+# valid pixels on a date, reservoir_area_km2 is set to NaN (the lake is under-
+# observed, so a low value would be a false drawdown). At or above it, the date is
+# kept for the reservoir series even when the wider catchment is only partly imaged.
 RESERVOIR_MIN_COVER = 95.0
 
 STATIC_DIR = Path("static_data")
@@ -290,7 +296,13 @@ def dedup_single_orbit(rows: list[dict]) -> list[dict]:
     #    Doing this before phase-grouping matters: with S1A+S1C, a partial and a
     #    full track can share the same 12-day phase, so filtering by phase median
     #    alone would still keep the partial scenes of the chosen phase.
-    rows = [row for row in rows if row["valid_px_pct"] >= S1_FULL_COVER_PCT]
+    #    EXCEPTION: a catchment-partial date whose RESERVOIR is fully observed is
+    #    kept - it still carries a valid reservoir_area_km2 (its water_km2 was
+    #    already NaN'd at extract time). This recovers the anchor-orbit cycles whose
+    #    SAR swath misses the eastern headwaters but fully images the western lake.
+    rows = [row for row in rows
+            if row["valid_px_pct"] >= S1_FULL_COVER_PCT
+            or row.get("reservoir_valid_pct", 0) >= RESERVOIR_MIN_COVER]
     if not rows:
         return []
 
@@ -469,7 +481,13 @@ def _needs_recompute(entry: dict, sensor: str) -> bool:
     reason = entry.get("reason")
     if reason == "coverage":
         thr = S1_MIN_VALID_PCT if sensor == "s1" else MIN_VALID_PCT
-        return entry.get("valid_px_pct", 0) >= thr
+        if entry.get("valid_px_pct", 0) >= thr:
+            return True
+        # S1: a catchment-partial date that nonetheless fully observed the reservoir
+        # now yields a reservoir-only row (see the gate in run_pipeline), so it must
+        # be re-read too rather than trusted as a permanent skip.
+        return (sensor == "s1"
+                and entry.get("reservoir_valid_pct", 0) >= RESERVOIR_MIN_COVER)
     if reason == "cloud":
         return entry.get("cloud_cover_percent", 100) <= MAX_CLOUD_PCT
     return False  # few_tiles / no_tiles: cheap pre-read skip, keep
@@ -640,10 +658,23 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                     save_cache(f"{site}_s1", cache)
                     continue
                 stats = extract_s1_stats(wtr_mosaic, reservoir, catchment)
-                if stats["valid_px_pct"] < S1_MIN_VALID_PCT:
-                    print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {S1_MIN_VALID_PCT}%)")
+                # Reservoir-decoupled gate: keep a date if EITHER the whole
+                # catchment is fully imaged OR the reservoir itself is fully
+                # observed. On the anchor orbit the eastern Svaneti headwaters fall
+                # outside the SAR swath on many cycles (catchment cov ~59%) while the
+                # western reservoir is still 100% seen - those dates carry a valid
+                # reservoir_area_km2 and must not be dropped. The catchment-wide
+                # water_km2, however, is only comparable when the basin is fully
+                # imaged, so it is NaN'd on the partial-catchment dates.
+                catchment_full = stats["valid_px_pct"] >= S1_MIN_VALID_PCT
+                reservoir_seen = stats.get("reservoir_valid_pct", 0) >= RESERVOIR_MIN_COVER
+                if not (catchment_full or reservoir_seen):
+                    print(f"skipped (coverage {stats['valid_px_pct']:.1f}% < {S1_MIN_VALID_PCT}%, "
+                          f"reservoir {stats.get('reservoir_valid_pct', 0):.1f}% < {RESERVOIR_MIN_COVER}%)")
                     cache[date_str] = {"status": "skip", "reason": "coverage", **stats}
                 else:
+                    if not catchment_full:
+                        stats["water_km2"] = float("nan")
                     cache[date_str] = {"status": "ok", **stats}
                     reservoir_area = stats.get("reservoir_area_km2")
                     reservoir_str = (f"  reservoir={reservoir_area:.2f} km2"

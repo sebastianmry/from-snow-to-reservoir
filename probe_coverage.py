@@ -40,6 +40,7 @@ import argparse
 import sys
 import statistics
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -190,12 +191,22 @@ def sample_phase_coverage(aoi: dict, by_date: dict, phase_dates: list[str],
     """Download N sample dates of one phase, mosaic + clip + catchment-mask them
     exactly like the real run, and return the per-date valid_px_pct list."""
     sample_dates = pick_sample_dates(sorted(phase_dates), n_samples)
+
+    # Download every sample date's tiles concurrently (network-bound; the clip is
+    # cheap). Each date keeps its own ordered tile list for the mosaic step below.
+    def fetch_date(date_str):
+        links = wtr_links_for_date(by_date[date_str])
+        tiles = [t for t in
+                 (download_and_clip(session, link, aoi["clip_box"]) for link in links)
+                 if t is not None]
+        return date_str, tiles
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        tiles_by_date = dict(pool.map(fetch_date, sample_dates))
+
     coverages = []
     for date_str in sample_dates:
-        links = wtr_links_for_date(by_date[date_str])
-        tiles = [tile_bytes for tile_bytes in
-                 (download_and_clip(session, link, aoi["clip_box"]) for link in links)
-                 if tile_bytes is not None]
+        tiles = tiles_by_date[date_str]
         if not tiles:
             print(f"      {date_str}: no readable tiles")
             continue
@@ -211,8 +222,13 @@ def sample_phase_coverage(aoi: dict, by_date: dict, phase_dates: list[str],
 
 
 def probe_s1_sample(aoi: dict, by_date: dict, by_phase: dict,
-                    candidates: list[int], n_samples: int):
+                    candidates: list[int], n_samples: int, only_phase: int = None):
     """Stage B: compare real pixel coverage of the candidate phases and recommend."""
+    if only_phase is not None:
+        candidates = [p for p in candidates if p == only_phase]
+        if not candidates:
+            print(f"    phase {only_phase} is not a candidate phase")
+            return
     if not candidates:
         print("    no candidate phases to sample")
         return
@@ -356,6 +372,9 @@ def main():
     parser.add_argument("--sample", type=int, default=0, metavar="N",
                         help="stage B: download N test dates per candidate phase and "
                              "measure real valid_px_pct (default 0 = footprint only)")
+    parser.add_argument("--only-phase", type=int, default=None, metavar="P",
+                        help="stage B: restrict sampling to this 12-day phase only "
+                             "(skips the other candidate phases)")
     parser.add_argument("--compare-orbit", metavar="YYYYMMDD", default=None,
                         help="second-orbit check: sample dates of the orbit through this "
                              "date and compare reservoir_area_km2 to the existing series "
@@ -390,7 +409,8 @@ def main():
         if want_sensor in (None, "s1"):
             by_date, by_phase, candidates = probe_s1_footprint(aoi)
             if args.sample > 0:
-                probe_s1_sample(aoi, by_date, by_phase, candidates, args.sample)
+                probe_s1_sample(aoi, by_date, by_phase, candidates, args.sample,
+                                only_phase=args.only_phase)
 
 
 if __name__ == "__main__":
