@@ -17,10 +17,17 @@ teilweise ab und würden die Schneefläche systematisch unterschätzen. Die
 coverage-korrigierten Spalten (`*_est`) rechnen diesen Bias heraus, sodass Tage
 mit Teilabdeckung mit Tagen voller Abdeckung vergleichbar werden.
 
-**Orbit-Bereinigung (Sentinel-1, Radar):** Echte Teilszenen entfernt das Verfahren
-zuerst (Schwelle 90 Prozent AOI-Abdeckung). Anschließend dedupliziert es die
-Szenen nach der 12-tägigen Wiederholungsphase, um ein Vermischen aufsteigender und
-absteigender Orbits zu vermeiden. Den versetzten S1C-Track schließt es aus.
+**Orbit-Bereinigung (Sentinel-1, Radar):** Das Verfahren behält ein Datum, wenn
+entweder das gesamte Einzugsgebiet voll abgebildet ist (mindestens 90 Prozent
+gültige Pixel) oder der Reservoir-Umriss selbst voll beobachtet ist (mindestens
+95 Prozent). Auf dem Enguri-Anker-Orbit verfehlt der SAR-Streifen auf etwa 33 von
+54 Zyklen die östlichen Svaneti-Quellgebiete (Einzugsgebiet-Abdeckung rund
+59 Prozent), bildet den westlichen See aber voll ab. Diese Zyklen tragen eine
+gültige Reservoirfläche und bleiben erhalten; ihr gebietsweites `water_km2` setzt
+die Pipeline auf NaN, da es über unterschiedliche Abdeckung nicht vergleichbar ist.
+Nur Szenen, die auch den See verfehlen, entfernt sie. Anschließend dedupliziert es
+die Szenen nach der 12-tägigen Wiederholungsphase, um ein Vermischen aufsteigender
+und absteigender Orbits zu vermeiden. Den versetzten S1C-Track schließt es aus.
 
 **Schutz gegen falsche Pegeleinbrüche:** Liegt die gültige Abdeckung des
 Reservoir-Umrisses an einem Datum unter 95 Prozent, setzt die Pipeline sowohl
