@@ -80,6 +80,36 @@ jobs:
       - name: Render scene overlays
         run: python render_overlays.py
 
+      # Safety guard: a row count can only grow (NaN dates are kept, never dropped).
+      # If a parquet has FEWER rows than the committed version, the store was
+      # incomplete this run (a missing MGRS tile pushes valid dates below the
+      # coverage threshold). Abort before commit so a partial run can never
+      # overwrite the good series; the failed run surfaces the problem.
+      - name: Guard against time-series regression
+        run: |
+          python - <<'PY'
+          import subprocess, sys, pandas as pd, glob
+          regressed = []
+          for path in sorted(glob.glob("*_timeseries.parquet")):
+              new = len(pd.read_parquet(path))
+              try:
+                  blob = subprocess.run(["git", "show", f"HEAD:{path}"],
+                                        capture_output=True, check=True).stdout
+                  with open("_head.parquet", "wb") as fh:
+                      fh.write(blob)
+                  old = len(pd.read_parquet("_head.parquet"))
+              except subprocess.CalledProcessError:
+                  old = 0  # new file, nothing to compare
+              print(f"{path}: committed={old} rows, new={new} rows")
+              if new < old:
+                  regressed.append(f"{path} ({old} -> {new})")
+          if regressed:
+              print("REGRESSION - refusing to commit a shorter series:")
+              for r in regressed:
+                  print(f"  {r}")
+              sys.exit(1)
+          PY
+
       - name: Commit and push refreshed data
         run: |
           git config user.name  "sebastianmry"
