@@ -1,0 +1,5 @@
+# Dashboard theme: dark mode with a blue accent instead of Streamlit's default red.
+# Affects sliders, tab underlines, widget focus, links, etc.
+[theme]
+base = "dark"
+primaryColor = "#2980b9"

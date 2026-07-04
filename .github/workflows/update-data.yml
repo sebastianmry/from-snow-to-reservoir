@@ -1,0 +1,125 @@
+name: Update satellite data
+
+# Weekly refresh of the dashboard data. The Sentinel-1 / HLS scenes for the two
+# AOIs renew only every ~6-12 days, so a weekly run reliably catches every new
+# scene. The pipeline is incremental (it only downloads / processes dates that
+# are not already cached), so a run with nothing new is cheap and commits nothing.
+on:
+  schedule:
+    - cron: "17 3 * * 1"     # Mondays 03:17 UTC (off the on-the-hour slot: GitHub
+                              # documents that :00 schedules are the most likely to be
+                              # delayed or dropped under load)
+  workflow_dispatch:          # manual "Run workflow" button
+
+# Never let two runs overwrite each other's commit.
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # needed to push the refreshed artefacts back
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pipeline dependencies
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Configure tile store path
+        run: echo "PIPELINE_LOCAL_DIR=$RUNNER_TEMP/opera_tiles" >> "$GITHUB_ENV"
+
+      # Earthdata login for earthaccess (the only credential the CI needs).
+      - name: Write Earthdata .netrc
+        run: |
+          umask 177
+          cat > "$HOME/.netrc" <<EOF
+          machine urs.earthdata.nasa.gov login ${{ secrets.EARTHDATA_USERNAME }} password ${{ secrets.EARTHDATA_PASSWORD }}
+          EOF
+
+      # Restore the tile store + per-date stats cache from the previous run so
+      # downloads and extraction stay incremental. The run_id in the key makes a
+      # fresh entry each run; restore-keys falls back to the most recent prefix.
+      - name: Restore tile + stats cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/opera_tiles
+            static_data/cache
+          key: opera-store-${{ github.run_id }}
+          restore-keys: |
+            opera-store-
+
+      # urs.earthdata.nasa.gov is dual-stack (A + AAAA), but GitHub-hosted runners
+      # have an IPv6 interface with no IPv6 egress. Linux prefers IPv6, so the
+      # connection goes to the AAAA address and dies with "[Errno 101] Network is
+      # unreachable" instead of falling back to IPv4. Disable IPv6 so all traffic
+      # uses the reachable IPv4 route.
+      - name: Force IPv4 (runner has no IPv6 egress to Earthdata)
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+
+      - name: Download new OPERA tiles
+        run: |
+          python download_s1.py
+          python download_hls.py
+
+      - name: Extract time series
+        run: python extract_timeseries.py
+
+      - name: Render scene overlays
+        run: python render_overlays.py
+
+      # Safety guard: a row count can only grow (NaN dates are kept, never dropped).
+      # If a parquet has FEWER rows than the committed version, the store was
+      # incomplete this run (a missing MGRS tile pushes valid dates below the
+      # coverage threshold). Abort before commit so a partial run can never
+      # overwrite the good series; the failed run surfaces the problem.
+      - name: Guard against time-series regression
+        run: |
+          python - <<'PY'
+          import subprocess, sys, pandas as pd, glob
+          regressed = []
+          for path in sorted(glob.glob("*_timeseries.parquet")):
+              new = len(pd.read_parquet(path))
+              try:
+                  blob = subprocess.run(["git", "show", f"HEAD:{path}"],
+                                        capture_output=True, check=True).stdout
+                  with open("_head.parquet", "wb") as fh:
+                      fh.write(blob)
+                  old = len(pd.read_parquet("_head.parquet"))
+              except subprocess.CalledProcessError:
+                  old = 0  # new file, nothing to compare
+              print(f"{path}: committed={old} rows, new={new} rows")
+              if new < old:
+                  regressed.append(f"{path} ({old} -> {new})")
+          if regressed:
+              print("REGRESSION - refusing to commit a shorter series:")
+              for r in regressed:
+                  print(f"  {r}")
+              sys.exit(1)
+          PY
+
+      - name: Commit and push refreshed data
+        run: |
+          git config user.name  "sebastianmry"
+          git config user.email "sebastian.macherey@gmail.com"
+          git add *_timeseries.parquet static_data/overlays
+          if git diff --cached --quiet; then
+            echo "No data changes - nothing to commit."
+          else
+            git commit -m "Auto-update satellite data ($(date -u +%Y-%m-%d))"
+            git push
+          fi
