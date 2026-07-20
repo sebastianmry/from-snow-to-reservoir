@@ -1,9 +1,6 @@
 """
-FROM SNOW TO RESERVOIR - Raster Overlay Pre-Rendering
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Pre-renders the DSWx scenes as small, coloured PNG overlays so the dashboard can
-step through them on a date slider WITHOUT doing any raster work at runtime (the
+step through them on a date slider without doing any raster work at runtime (the
 laptop is weak and the TIFs are large). All the heavy lifting -
 read from the store, mosaic, classify, downsample - happens once here; the app
 only loads finished PNGs via folium.ImageOverlay.
@@ -14,7 +11,7 @@ timeseries parquet (so the scenes match the charts), colouring the mosaic:
   S1 (water):
     water (1-5)              -> blue
   HLS (snow / ice):
-    water (1-5)              -> blue
+    water (1-5)              -> not rendered (own dedicated S1 overlay)
     seasonal snow (252)      -> white
     snow on glacier (252)    -> light blue
     bare glacier ice         -> teal
@@ -26,7 +23,7 @@ Output:
     static_data/overlays/{site}/{sensor}/bounds.json   (one [[S,W],[N,E]] box)
 
 Usage:
-    python extract_timeseries.py     # first, to produce the parquets + cache
+    python extract_timeseries.py              # first, to produce the parquets + cache
     python render_overlays.py                 # all AOIs + both sensors
     python render_overlays.py enguri s1       # filter by AOI and/or sensor
     python render_overlays.py --refresh       # re-render existing PNGs too
@@ -103,8 +100,11 @@ def _classify_s1(wtr: np.ndarray, catchment_mask: np.ndarray) -> np.ndarray:
 
 def _classify_hls(wtr: np.ndarray, catchment_mask: np.ndarray,
                   glacier_mask: np.ndarray) -> np.ndarray:
-    """RGBA image: water / seasonal snow / snow-on-glacier / bare ice; cloud and
-    NoData transparent; outside the catchment transparent."""
+    """RGBA image: seasonal snow / snow-on-glacier / bare ice; cloud and NoData
+    transparent; outside the catchment transparent. Water is excluded from the
+    render on purpose - it has its own dedicated S1 overlay, so drawing it here
+    too just duplicates that layer inside the snow/ice view. Still computed
+    (not rendered) so it can be subtracted out of the bare-ice residual below."""
     rgba = np.zeros((*wtr.shape, 4), dtype=np.uint8)
     usable = (wtr != NODATA) & (wtr != CLOUD_WTR_VALUE) & catchment_mask
 
@@ -117,7 +117,6 @@ def _classify_hls(wtr: np.ndarray, catchment_mask: np.ndarray,
     rgba[bare_ice]      = C_BARE_ICE
     rgba[snow_seasonal] = C_SNOW_SEASONAL
     rgba[snow_glacier]  = C_SNOW_GLACIER
-    rgba[water]         = C_WATER
     return rgba
 
 

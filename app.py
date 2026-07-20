@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - Streamlit Dashboard
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Stage 3 of the pipeline: interactive visualization of HLS timeseries data.
 
 Run with:
@@ -19,7 +16,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from shapely.geometry import shape
+from shapely.geometry import Point, shape
 from streamlit_folium import st_folium
 
 # Main inflow river per AOI (HydroRIVERS has no names; curated). Shown as a
@@ -73,7 +70,6 @@ def make_mock_data(aoi_key: str) -> pd.DataFrame:
     dates = pd.date_range("2024-08-01", periods=200, freq="3D")
     time_axis = np.linspace(0, 4 * np.pi, len(dates))
 
-    water      = 12 + 3 * np.sin(time_axis * 0.5 + 1) + rng.normal(0, 0.4, len(dates))
     seas_snow  = np.clip(60 + 50 * np.sin(time_axis + np.pi) + rng.normal(0, 5, len(dates)), 0, None)
     glac_snow  = np.clip(30 + 20 * np.sin(time_axis + np.pi) + rng.normal(0, 3, len(dates)), 0, None)
     bare_ice   = np.clip(20 - 15 * np.sin(time_axis + np.pi) + rng.normal(0, 2, len(dates)), 0, None)
@@ -81,12 +77,11 @@ def make_mock_data(aoi_key: str) -> pd.DataFrame:
 
     # Sprinkle some NaN cloud gaps
     gap_indices = rng.choice(len(dates), size=20, replace=False)
-    for series in [water, seas_snow, glac_snow, bare_ice]:
+    for series in [seas_snow, glac_snow, bare_ice]:
         series[gap_indices] = np.nan
 
     return pd.DataFrame({
         "date":                pd.to_datetime(dates),
-        "water_area_km2":      np.round(water, 2),
         "seasonal_snow_km2":   np.round(seas_snow, 1),
         "snow_on_glacier_km2": np.round(glac_snow, 1),
         "bare_ice_km2":        np.round(bare_ice, 1),
@@ -374,6 +369,68 @@ def river_label_point(features: list[dict]) -> tuple[float, float] | None:
     return (label_point.y, label_point.x)
 
 
+def _shrink_attribution(fmap: folium.Map):
+    """Leaflet's basemap attribution ("Leaflet | (c) OpenStreetMap ... (c) CARTO")
+    inherits the page's 16px body font by default, much larger than the rest of the
+    app's UI text. Scale it down to match the swatch-legend captions."""
+    fmap.get_root().header.add_child(folium.Element(
+        '<style>.leaflet-control-attribution { font-size: 11px; line-height: 1.4; }</style>'
+    ))
+
+
+def _add_basemap_layers(fmap: folium.Map, default: str = "plain"):
+    """Three base layers, all always added, switchable via the
+    folium.LayerControl() added once all overlays are on the map; `default`
+    ("terrain" / "plain" / "satellite") picks which one starts checked.
+
+    "plain": CartoDB Dark Matter - flat dark grey, quiet like Positron but
+    without reading as stark white; the default for the scene-browser raster
+    overlays.
+    "terrain": Stadia's Stamen Terrain - hillshaded relief, showing the
+    catchment's topography. Reads an optional stadia_api_key from st.secrets
+    (see .streamlit/secrets.toml, gitignored, and the same key under
+    Streamlit Cloud's app settings for the deployed site); without a key it
+    falls back to Stadia's keyless tier, which only resolves on localhost.
+    "satellite": Esri World Imagery, a photographic alternative; the default
+    for the AOI overview map.
+
+    The catchment/glacier/river/reservoir layers drawn on top get a white
+    casing (see build_map()/build_overlay_map()) so they stay readable
+    against Terrain/Satellite without needing to dim the basemap itself."""
+    # Added Dark Matter, Satellite, Terrain - the LayerControl lists base
+    # layers in add order, and that's the order they should read in the picker.
+    folium.TileLayer(
+        tiles="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+        attr='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © CARTO',
+        name="Dark Matter",
+        show=(default == "plain"),
+    ).add_to(fmap)
+    folium.TileLayer(
+        tiles=("https://server.arcgisonline.com/ArcGIS/rest/services/"
+               "World_Imagery/MapServer/tile/{z}/{y}/{x}"),
+        attr=("Tiles © Esri — Source: Esri, Maxar, Earthstar "
+              "Geographics, and the GIS User Community"),
+        name="Satellite",
+        show=(default == "satellite"),
+    ).add_to(fmap)
+    # Bare xyzservices lookup can't take a key param, so build the URL by hand
+    # from the real template it resolves ({variant}/{ext} filled in) rather
+    # than a hand-typed template, which leaves a dangling literal {ext}.
+    stadia_key = st.secrets.get("stadia_api_key")
+    stadia_url = "https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}{r}.png"
+    if stadia_key:
+        stadia_url += f"?api_key={stadia_key}"
+    folium.TileLayer(
+        tiles=stadia_url,
+        attr=('© <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> '
+              '© <a href="https://www.stamen.com/" target="_blank">Stamen Design</a> '
+              '© <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> '
+              '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'),
+        name="Terrain",
+        show=(default == "terrain"),
+    ).add_to(fmap)
+
+
 def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame | None,
               reservoir: gpd.GeoDataFrame | None = None,
               catchment: gpd.GeoDataFrame | None = None) -> folium.Map:
@@ -387,11 +444,12 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # steps give a fit that actually frames it.
     fmap = folium.Map(
         location=[center_lat, center_lon],
-        tiles="CartoDB positron",
+        tiles=None,
         zoomSnap=0.25,
     )
+    _add_basemap_layers(fmap, default="satellite")
     # Fit to the AOI. With zoomSnap=0.25 this lands on a fractional zoom, so the
-    # frame can sit between integer levels. A small OUTWARD pad (negative shrink)
+    # frame can sit between integer levels. A small outward pad (negative shrink)
     # zooms out a touch so the whole catchment contour stays inside the frame with
     # a little margin. The clip_box only clears the catchment by a 0.02 deg buffer,
     # so an inward shrink would crop the western basin boundary.
@@ -401,12 +459,13 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     fmap.fit_bounds([[min_lat + pad_lat, min_lon + pad_lon],
                      [max_lat - pad_lat, max_lon - pad_lon]])
 
-    # Load Montserrat so the on-map reservoir label matches the CartoDB Positron
-    # basemap typography (its place labels use the Montserrat family).
+    # Load Montserrat for the on-map reservoir label - a clean geographic-label
+    # typeface regardless of which base layer (topo or satellite) is active.
     fmap.get_root().header.add_child(folium.Element(
         '<link href="https://fonts.googleapis.com/css2?'
         'family=Montserrat:wght@500;600&display=swap" rel="stylesheet">'
     ))
+    _shrink_attribution(fmap)
 
     # Reservoir centre for placing the reservoir-name label on the lake itself.
     res_label_anchor = None
@@ -416,17 +475,31 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
 
     # AOI = the drainage basin above the dam (HydroBASINS catchment). Draw its
     # contour; the dashed bbox is only a fallback when the catchment is missing.
+    # Wrapped in a named FeatureGroup (like glaciers/rivers below) rather than
+    # naming the GeoJson directly - folium's LayerControl reads FeatureGroup
+    # names far more reliably than a bare named GeoJson.
     if catchment is not None and not catchment.empty:
+        catchment_group = folium.FeatureGroup(name="Catchment (HydroBASINS)")
+        # Thin white halo under the grey-blue line - grey-blue holds its own
+        # mid-luminance contrast against both the near-black Dark Matter
+        # basemap and near-white snow/glacier terrain in Satellite, while the
+        # halo covers the few backgrounds close to grey-blue itself.
         folium.GeoJson(
             catchment.__geo_interface__,
-            name="Catchment",
+            style_function=lambda _: {
+                "color": "#ffffff", "weight": 4.0, "opacity": 0.9, "fillOpacity": 0,
+            },
+        ).add_to(catchment_group)
+        folium.GeoJson(
+            catchment.__geo_interface__,
             style_function=lambda _: {
                 "color": "#5d6d7e",
-                "weight": 2.0,
+                "weight": 3.0,
                 "fillColor": "#5d6d7e",
                 "fillOpacity": 0.04,
             },
-        ).add_to(fmap)
+        ).add_to(catchment_group)
+        catchment_group.add_to(fmap)
     else:
         folium.Rectangle(
             bounds=[[min_lat, min_lon], [max_lat, max_lon]],
@@ -475,6 +548,34 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # flow order = big rivers) carries the river-name tooltip on hover; small
     # tributaries stay un-labelled.
     if rivers:
+        # Clip to the catchment, like the glaciers above: the source data is
+        # only bbox-filtered per AOI, so a segment can dangle past the actual
+        # drainage divide - most visibly right below the dam, where a stub of
+        # "river" pokes out past the reservoir with nothing connecting it.
+        if catchment is not None and not catchment.empty:
+            rivers_gdf = gpd.GeoDataFrame.from_features(rivers, crs="EPSG:4326")
+            rivers_gdf = gpd.clip(rivers_gdf, catchment)
+            # The catchment isn't pinned exactly to the dam wall - HydroBASINS'
+            # pour point can sit a little past it - so a short river stub just
+            # downstream can still fall inside the clip above. Cut anything
+            # within 1.5 km of the dam point rather than
+            # buffering the reservoir itself, since the shoreline sits well
+            # over 1.5 km from the dam at several points and that buffer would
+            # erase real inflow rivers elsewhere. 1.5 km covers the stub at
+            # both dams (Zhinvali ~1.4 km, Enguri under 1 km); real inflow
+            # segments within that radius already fall inside the reservoir
+            # polygon and get clipped by the mask step below regardless.
+            if aoi.get("dam"):
+                dam_point = gpd.GeoSeries([Point(aoi["dam"])], crs="EPSG:4326")
+                dam_buffered = dam_point.to_crs("EPSG:32638").buffer(1500).to_crs("EPSG:4326").iloc[0]
+                mask_gdf = gpd.GeoDataFrame(geometry=[dam_buffered], crs="EPSG:4326")
+                rivers_gdf = gpd.overlay(rivers_gdf, mask_gdf, how="difference")
+            # Also drop whatever falls inside the reservoir polygon itself, so
+            # no river line is left showing through/under the lake fill.
+            if reservoir is not None and not reservoir.empty:
+                res_mask = gpd.GeoDataFrame(geometry=[reservoir.geometry.union_all()], crs="EPSG:4326")
+                rivers_gdf = gpd.overlay(rivers_gdf, res_mask, how="difference")
+            rivers = json.loads(rivers_gdf.to_json())["features"]
         river_style = lambda feat: {
             "color": "#2980b9",
             "weight": _river_weight(feat["properties"].get("ORD_FLOW")),
@@ -508,21 +609,23 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
             folium.Marker(
                 location=list(anchor),
                 icon=folium.DivIcon(
-                    icon_size=(170, 20),
-                    icon_anchor=(85, 10),
+                    icon_size=(298, 35),
+                    icon_anchor=(149, 18),
                     html=(
-                        # Hydrographic label convention (Imhof/Brewer): italic,
-                        # lightly letter-spaced, in the deep-water blue of the
-                        # reservoir outline (#0b3d66) so the name reads as a water
-                        # feature and stays consistent with the fill. A soft white
-                        # halo keeps it legible, no background box.
-                        '<div style="font-size:10px;font-weight:600;'
-                        'letter-spacing:0.6px;color:#1f6fc0;'
-                        "font-family:'Montserrat','Helvetica Neue',Arial,sans-serif;"
+                        # Stadia-style basemap label: thin grey-blue text with
+                        # a crisp white outline (not a blurred glow) and wide
+                        # letter-spacing, matching the "Zhinvali Reservoir"
+                        # look on Stadia's terrain tiles (Metropolis-style
+                        # geometric sans - approximated here with a light
+                        # system-font weight since Metropolis isn't loaded).
+                        # Grey-blue ties the label to the catchment-boundary
+                        # color instead of flat black.
+                        '<div style="font-size:15px;font-weight:400;'
+                        'letter-spacing:1.5px;color:#5d6d7e;'
+                        "font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;"
                         'text-align:center;white-space:nowrap;'
-                        'text-shadow:0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, '
-                        '-1px 0 1px #fff, 1px 0 1px #fff, 0 -1px 1px #fff, '
-                        '0 1px 1px #fff;">'
+                        '-webkit-text-stroke:1px #fff;paint-order:stroke fill;'
+                        'text-shadow:0 0 1px #fff, 0 0 1px #fff;">'
                         f'{name} Reservoir</div>'
                     ),
                 ),
@@ -532,23 +635,23 @@ def build_map(aoi: dict, rivers: list[dict] | None, glaciers: gpd.GeoDataFrame |
     # feature, so make it pop: vivid blue fill + crisp dark outline on top of the
     # paler river/water layers.
     if reservoir is not None and not reservoir.empty:
-        area_km2 = reservoir.iloc[0].get("area_km2")
-        tooltip = "Reservoir footprint (S1)" + (f": {area_km2:.2f} km²"
-                                                if area_km2 is not None else "")
+        reservoir_group = folium.FeatureGroup(name="Reservoir footprint (S1)")
         folium.GeoJson(
             reservoir.__geo_interface__,
-            name="Reservoir footprint (S1)",
             style_function=lambda _: {
                 "fillColor": "#1f6fc0",
                 "color": "#0b3d66",
-                "weight": 2.5,
+                "weight": 3.5,
                 "fillOpacity": 0.78,
             },
-            highlight_function=lambda _: {"weight": 3.5, "fillOpacity": 0.9},
-            tooltip=tooltip,
-        ).add_to(fmap)
+            highlight_function=lambda _: {"weight": 4.5, "fillOpacity": 0.9},
+            tooltip="Reservoir footprint",
+        ).add_to(reservoir_group)
+        reservoir_group.add_to(fmap)
 
-    folium.LayerControl().add_to(fmap)
+    # Must be added last - it only picks up layers already on the map. Also
+    # exposes the glacier/river FeatureGroups as overlay checkboxes for free.
+    folium.LayerControl(position="topright", collapsed=True).add_to(fmap)
     return fmap
 
 
@@ -568,16 +671,16 @@ def _reservoir_zoom_bounds(reservoir: gpd.GeoDataFrame, pad: float = 0.2) -> lis
 def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
                       catchment: gpd.GeoDataFrame | None,
                       reservoir: gpd.GeoDataFrame | None,
-                      glaciers: gpd.GeoDataFrame | None = None,
                       zoom_to_reservoir: bool = False) -> folium.Map:
-    """Light-weight map for the scene browser: basemap, catchment contour, the
-    chosen pre-rendered raster, and (for HLS) the RGI glacier outlines so glaciers
-    are always clearly bounded - whether currently snow-covered or bare ice.
+    """Light-weight map for the scene browser: basemap, catchment contour and
+    the chosen pre-rendered raster.
 
     For the S1 water scenes (zoom_to_reservoir), the view opens framed on the
     reservoir footprint, since that is where the radar water signal lives."""
     # zoomSnap=0.25 (fractional zoom) so the fit can frame between integer levels.
-    fmap = folium.Map(tiles="CartoDB positron", zoomSnap=0.25)
+    fmap = folium.Map(tiles=None, zoomSnap=0.25)
+    _shrink_attribution(fmap)
+    _add_basemap_layers(fmap, default="plain")
     res_bounds = _reservoir_zoom_bounds(reservoir) if zoom_to_reservoir else None
     if res_bounds:
         fmap.fit_bounds(res_bounds)
@@ -590,37 +693,77 @@ def build_overlay_map(aoi: dict, png_uri: str, bounds: list,
         fmap.fit_bounds([[lat_min - pad_lat, lon_min - pad_lon],
                          [lat_max + pad_lat, lon_max + pad_lon]])
 
+    # Wrapped in named FeatureGroups (not bare GeoJson) so folium's LayerControl
+    # reads a proper label instead of the auto-generated "macro_element_div_N".
     if catchment is not None and not catchment.empty:
+        catchment_group = folium.FeatureGroup(name="Catchment (HydroBASINS)")
+        # White casing under the grey line - see build_map()'s identical fix
+        # for why: readable against busy satellite imagery, not just flat basemaps.
+        folium.GeoJson(
+            catchment.__geo_interface__,
+            style_function=lambda _: {
+                "color": "#ffffff", "weight": 4.5, "opacity": 0.9, "fill": False,
+            },
+        ).add_to(catchment_group)
         folium.GeoJson(
             catchment.__geo_interface__,
             style_function=lambda _: {
                 "color": "#5d6d7e", "weight": 2.0, "fill": False,
             },
-        ).add_to(fmap)
+        ).add_to(catchment_group)
+        catchment_group.add_to(fmap)
 
+    # zoom_to_reservoir is only set for the S1 water scenes (see the caller), so
+    # it doubles as the sensor flag here for the layer's LayerControl label.
     folium.raster_layers.ImageOverlay(
         image=png_uri, bounds=bounds, opacity=0.9, zindex=10,
+        name="Water scene (S1)" if zoom_to_reservoir else "Snow & ice scene (HLS)",
     ).add_to(fmap)
 
-    # RGI glacier outlines (violet, no fill) so the glacier extent reads clearly
-    # against the cyan snow field / over the bare-ice raster.
-    if glaciers is not None and not glaciers.empty:
-        folium.GeoJson(
-            glaciers.__geo_interface__,
-            style_function=lambda _: {
-                "color": "#5e4b8b", "weight": 1.0, "fill": False, "opacity": 0.9,
-            },
-        ).add_to(fmap)
-
     # Thin reservoir outline on top, for orientation against the water raster.
-    if reservoir is not None and not reservoir.empty:
+    # S1-only: it is an S1-derived footprint, so it has no business on the
+    # HLS snow/ice map - zoom_to_reservoir doubles as the sensor flag here too.
+    if zoom_to_reservoir and reservoir is not None and not reservoir.empty:
+        reservoir_group = folium.FeatureGroup(name="Reservoir footprint (S1)")
         folium.GeoJson(
             reservoir.__geo_interface__,
             style_function=lambda _: {
                 "color": "#0b3d66", "weight": 1.5, "fill": False,
             },
-        ).add_to(fmap)
+        ).add_to(reservoir_group)
+        reservoir_group.add_to(fmap)
+
+    folium.LayerControl(position="topright", collapsed=True).add_to(fmap)
     return fmap
+
+
+def _swatch_box(color: str, label: str, border: str = "rgba(0,0,0,0.25)") -> str:
+    """One legend chip: a filled square (polygon/area layers)."""
+    return (
+        '<span style="display:inline-flex;align-items:center;white-space:nowrap;">'
+        f'<span style="width:14px;height:14px;border-radius:3px;background:{color};'
+        f'border:1px solid {border};margin-right:6px;"></span>{label}</span>'
+    )
+
+
+def _swatch_line(color: str, label: str, width: str = "2px") -> str:
+    """One legend chip: a horizontal rule (line/outline layers)."""
+    return (
+        '<span style="display:inline-flex;align-items:center;white-space:nowrap;">'
+        f'<span style="width:14px;height:0;border-top:{width} solid {color};'
+        f'margin-right:6px;"></span>{label}</span>'
+    )
+
+
+def _render_legend_row(chips: str, bottom_margin: int = 18):
+    # Grid layout keeps every column's left edge fixed across rows; a flex row would
+    # size each chip to its own label, so a longer label on one row would shift the
+    # next column out of alignment with the row above.
+    st.markdown(
+        f'<div style="display:grid;grid-template-columns:repeat(2, minmax(180px, 1fr));'
+        f'gap:6px 16px;font-size:0.85rem;margin:2px 0 {bottom_margin}px;">{chips}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # Overlay legend swatches - colours match the rendered PNG classes (render_overlays.py).
@@ -630,38 +773,47 @@ _OVERLAY_LEGEND = {
         ("#5ac8e6", "Seasonal snow"),
         ("#8e7cc3", "Snow on glacier"),
         ("#5e4b8b", "Bare glacier ice"),
-        ("#1f6fc0", "Water"),
     ],
 }
 
 
+# Sensor-specific product explainer, attached to the "Dataset" radio's own
+# help=. Just the pixel-level detail unique to viewing a raw scene - product
+# name, optical/radar and revisit rate are already on the Time series tabs
+# (Water components / Snow and ice components), so they're not repeated here.
+_SENSOR_HELP = {
+    "s1": "Mainly captures open water such as the reservoir; narrow "
+          "mountain rivers fall below the pixel size.",
+    "hls": "Captures snow, glacier ice and water in one product.",
+}
+
+
 def render_overlay_legend(sensor: str):
-    """Compact colour-swatch legend under the scene-browser map."""
-    items = _OVERLAY_LEGEND.get(sensor, [])
-    chips = "".join(
-        f'<span style="display:inline-flex;align-items:center;margin-right:16px;'
-        f'white-space:nowrap;">'
-        f'<span style="width:14px;height:14px;border-radius:3px;background:{color};'
-        f'border:1px solid rgba(0,0,0,0.25);margin-right:6px;"></span>{label}</span>'
-        for color, label in items
-    )
-    if sensor == "hls":
-        chips += (
-            '<span style="display:inline-flex;align-items:center;white-space:nowrap;">'
-            '<span style="width:14px;height:0;border-top:2px solid #5e4b8b;'
-            'margin-right:6px;"></span>Glacier boundary (RGI)</span>'
-        )
-    st.markdown(
-        f'<div style="display:flex;flex-wrap:wrap;gap:6px 0;font-size:0.85rem;'
-        f'margin:2px 0 18px;">{chips}</div>',
-        unsafe_allow_html=True,
-    )
+    """Compact colour-swatch legend under the scene-browser map. Covers every
+    layer build_overlay_map() actually draws, not just the raster classes -
+    the catchment outline is on that map too."""
+    chips = _swatch_line("#5d6d7e", "Catchment (HydroBASINS)")
+    chips += "".join(_swatch_box(color, label) for color, label in _OVERLAY_LEGEND.get(sensor, []))
     if sensor == "s1":
-        st.caption(
-            "DSWx-S1 (radar, cloud independent, 30 m grid). SAR mainly captures open "
-            "water such as the reservoir; narrow mountain rivers usually fall below the "
-            "pixel size and are barely detected."
-        )
+        chips += _swatch_line("#0b3d66", "Reservoir footprint (S1)")
+    _render_legend_row(chips)
+
+
+def render_aoi_legend(has_catchment: bool, has_glaciers: bool, has_rivers: bool,
+                      has_reservoir: bool):
+    """Compact colour-swatch legend under the AOI overview map. Colours match the
+    layer styling in build_map(); only entries for layers actually drawn appear."""
+    chips = ""
+    if has_catchment:
+        chips += _swatch_line("#5d6d7e", "Catchment (HydroBASINS)")
+    if has_glaciers:
+        chips += _swatch_box("#cfc6e8", "RGI v7 glaciers", border="#7e6fb8")
+    if has_rivers:
+        chips += _swatch_line("#2980b9", "Rivers (HydroRIVERS)")
+    if has_reservoir:
+        chips += _swatch_box("#1f6fc0", "Reservoir footprint (S1)", border="#0b3d66")
+    if chips:
+        _render_legend_row(chips, bottom_margin=2)
 
 
 # ─────────────────────────────────────────────
@@ -712,19 +864,28 @@ def chart_water(timeseries_df: pd.DataFrame) -> go.Figure:
         ))
 
     fig.update_layout(
-        title="Reservoir water area (DSWx-S1, ~12 day)",
-        # Legend sits below the plot so it never collides with the title above.
-        legend=dict(orientation="h", yanchor="middle", y=-0.13, xanchor="center", x=0.5,
-                    font=dict(size=13, color="#2c3e50")),
         xaxis_title=None,
-        yaxis_title="Area (km²)",
         hovermode="x unified",
         plot_bgcolor="white",
         paper_bgcolor="white",
         font=dict(family=FONT_STACK, color="#2c3e50"),
-        margin=dict(t=40, b=58, l=60, r=60),
-        xaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
-        yaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
+        height=450,
+        # Title lives outside the chart (see page_time_series), matching
+        # the "Scenes over time" fact-line style. Height matches the map box
+        # beside it. Autoexpand off with a fixed bottom margin keeps the legend
+        # centred below the axis whether it wraps to one row or two.
+        margin=dict(t=20, b=110, l=60, r=60, autoexpand=False),
+        legend=dict(orientation="h", yanchor="middle", y=-0.23, xanchor="center", x=0.5,
+                    font=dict(size=13, color="#2c3e50")),
+        # Explicit tick colour: Streamlit's Plotly theme sets a near-white tickfont
+        # that would otherwise win over layout.font on the white chart background.
+        xaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf",
+                   tickfont=dict(color="#000000")),
+        # standoff pushes the title away from the tick labels - without it the
+        # rotated "Area (km²)" text crowds right up against the numbers.
+        yaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf",
+                   tickfont=dict(color="#000000"),
+                   title=dict(text="Area (km²)", standoff=18, font=dict(color="#000000"))),
     )
     return fig
 
@@ -767,19 +928,29 @@ def chart_snow(timeseries_df: pd.DataFrame) -> go.Figure:
         ))
 
     fig.update_layout(
-        title="Snow and ice components (stacked)",
         xaxis_title=None,
-        yaxis_title="Area (km²)",
         hovermode="x unified",
         plot_bgcolor="white",
         paper_bgcolor="white",
         font=dict(family=FONT_STACK, color="#2c3e50"),
-        margin=dict(t=40, b=58, l=60, r=60),
-        # Legend sits below the plot so it never collides with the title above.
-        legend=dict(orientation="h", yanchor="middle", y=-0.13, xanchor="center", x=0.5,
+        height=450,
+        # Title lives outside the chart (see page_time_series), matching
+        # the "Scenes over time" fact-line style. Height matches the map box
+        # beside it. The three legend items can wrap to up to three rows in a
+        # narrow column; autoexpand off with a fixed bottom margin keeps the
+        # legend centred below the axis regardless of the row count.
+        margin=dict(t=20, b=110, l=60, r=60, autoexpand=False),
+        legend=dict(orientation="h", yanchor="middle", y=-0.23, xanchor="center", x=0.5,
                     font=dict(size=13, color="#2c3e50")),
-        xaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
-        yaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf"),
+        # Explicit tick colour: Streamlit's Plotly theme sets a near-white tickfont
+        # that would otherwise win over layout.font on the white chart background.
+        xaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf",
+                   tickfont=dict(color="#000000")),
+        # standoff pushes the title away from the tick labels - without it the
+        # rotated "Area (km²)" text crowds right up against the numbers.
+        yaxis=dict(showgrid=True, gridcolor="#f0f0f0", linecolor="#d6dbdf",
+                   tickfont=dict(color="#000000"),
+                   title=dict(text="Area (km²)", standoff=18, font=dict(color="#000000"))),
     )
     return fig
 
@@ -806,14 +977,32 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Arimo:wght@400;500;600;700&display=swap');
 
-    html, body, [class*="css"], .stApp, button, input, textarea, select {
-        font-family: 'Arimo', 'Helvetica Neue', Arial, sans-serif;
+    /* Streamlit injects its own theme stylesheet after this block, so it wins
+       ties on headings/captions even though the selector below already
+       matches them - !important is needed here, not just a broader selector.
+       The Material icon glyphs (info button, sidebar collapse arrow) render
+       via a ligature font and must keep their own font-family or they show
+       literal words ("info") instead of the icon. */
+    html, body, [class*="css"], .stApp, button, input, textarea, select,
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
+    .stApp p, .stApp label, .stApp [data-testid="stCaptionContainer"],
+    .stApp [data-testid="stMarkdownContainer"] {
+        font-family: 'Arimo', 'Helvetica Neue', Arial, sans-serif !important;
     }
+    .stApp [data-testid="stIconMaterial"] {
+        font-family: 'Material Symbols Rounded' !important;
+    }
+
+    /* The page title is the only heading tag left in the app now (every
+       section/card label below it is a plain styled div, not
+       st.header/st.subheader) - pin its size explicitly rather than
+       trusting Streamlit's default h1 scale. */
+    .stApp h1 { font-size: 2.5rem !important; }
 
     /* Trim Streamlit's oversized default top padding. It reserves ~6rem for the
        top-right toolbar, but the title sits on the left, so a tighter top gap
        reads cleaner without colliding with the toolbar. */
-    .block-container { padding-top: 2.5rem !important; }
+    .block-container { padding-top: 1.2rem !important; }
 
     /* The sidebar's own top gap comes from two places depending on the
        Streamlit version: the content wrapper's top padding and a header band
@@ -822,27 +1011,128 @@ st.markdown(
     [data-testid="stSidebarUserContent"],
     [data-testid="stSidebarContent"],
     section[data-testid="stSidebar"] .block-container {
-        padding-top: 1.5rem !important;
+        padding-top: 0.5rem !important;
     }
     [data-testid="stSidebarHeader"] {
-        padding-top: 0.5rem !important;
+        padding-top: 0 !important;
         padding-bottom: 0 !important;
         height: auto !important;
         min-height: 0 !important;
     }
+    /* The rule under the nav links (Overview/Scene Browser) sits well below
+       them by default - pull it closer. */
+    [data-testid="stSidebarNavSeparator"] {
+        padding-top: 9px !important;
+        margin-bottom: 28px !important;
+    }
+    /* Compact sidebar: holds only the AOI picker and the time range slider.
+       Streamlit sets the width as an inline style (user-resizable), so this
+       needs !important to win as the starting width. Fixed rather than
+       resizable: the collapse control doesn't work with the width forced
+       open like this, so it's hidden below rather than left as a dead button. */
+    section[data-testid="stSidebar"] {
+        width: 300px !important;
+        min-width: 300px !important;
+    }
+    section[data-testid="stSidebar"] button[data-testid="stBaseButton-headerNoPadding"] {
+        display: none;
+    }
 
-    /* Heading hierarchy: distinct title, calmer section heads. */
+    /* Row spacing between the sidebar's widgets (AOI picker, time range
+       slider). 1.25rem on top of the widgets' own intrinsic 16px gives 36px
+       between rows - more breathing room than the 16px gap above the AOI
+       picker, on purpose. */
+    section[data-testid="stSidebar"] [data-testid="stElementContainer"] {
+        margin-bottom: 1.25rem;
+    }
+    section[data-testid="stSidebar"] nav {
+        margin-bottom: 1.25rem;
+    }
+
+    /* Time range is a two-handle slider whose left handle sits exactly on the
+       dataset's earliest date, so the floating current-value tooltip above it
+       and the static min-bound label on the track below it show the identical
+       date twice, stacked. The tooltip is the one that also updates when
+       dragged, so keep that and drop the redundant static label. */
+    div[data-testid="stSlider"]:has([aria-label="Time range"]) [data-testid="stSliderTickBar"] {
+        display: none;
+    }
+
+    /* Info popover: a plain icon button, not a bordered pill, so it reads as
+       a small dark-mode-native control instead of a light default widget.
+       The info icon sits in the button's first (visible) child div; the
+       auto-added dropdown chevron sits in the second, aria-hidden one -
+       hide that wrapper outright rather than the icon glyph itself. */
+    button[data-testid="stPopoverButton"] {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 4px 6px !important;
+    }
+    button[data-testid="stPopoverButton"]:hover {
+        background: rgba(255, 255, 255, 0.08) !important;
+    }
+    button[data-testid="stPopoverButton"] div[aria-hidden="true"] {
+        display: none;
+    }
+    button[data-testid="stPopoverButton"] [data-testid="stIconMaterial"] {
+        color: #2980b9;
+        font-size: 1.4rem;
+    }
+
     .stApp h1 { font-weight: 700; letter-spacing: -0.01em; }
-    .stApp h2, .stApp h3 { font-weight: 600; letter-spacing: -0.005em; }
 
-    /* KPI tiles framed as grouped cards instead of floating on the dark ground. */
+    /* KPI tiles framed as grouped cards instead of floating on the dark ground.
+       The two cards sit side by side in a column pair (see the sidebar code),
+       so the card fills its column instead of using a fixed pixel width. */
+    div[data-testid="stElementContainer"]:has(> div[data-testid="stMetric"]) {
+        text-align: center;
+    }
     div[data-testid="stMetric"] {
+        width: 100%;
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.10);
-        border-radius: 12px;
-        padding: 14px 18px;
+        border-radius: 14px;
+        padding: 14px 12px;
+        text-align: center;
+        /* Equal height across both cards; the card without a delta pill would
+           otherwise render shorter than the rest. */
+        min-height: 124px;
     }
     div[data-testid="stMetric"] label { opacity: 0.75; }
+    /* Center the label, value and delta in each card. The label is a CSS grid by
+       default, so it needs flex-centering to actually move; value and delta are
+       flex rows that only need justify-content. */
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+        display: flex; justify-content: center; align-items: center;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"],
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"],
+    div[data-testid="stMetric"] div:has(> [data-testid="stMetricDelta"]) {
+        justify-content: center;
+    }
+    /* The delta shows a range (min-max), not a trend, so the built-in
+       up/down triangle is misleading - hidden in favour of the "↔" written
+       into the delta text itself. Square corners to match the outer card;
+       extra margin-top pulls it further away from the value above. */
+    div[data-testid="stMetric"] [data-testid^="stMetricDeltaIcon"] {
+        display: none;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        border-radius: 0;
+        margin-top: 12px;
+    }
+    /* delta text supports markdown, so a blank line between the range and
+       the mean renders as two stacked paragraphs instead of one long line -
+       kept tight (they're one reading unit) while the pill above is spaced
+       further from the metric value. */
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] p {
+        margin: 0;
+        line-height: 1.5;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] p + p {
+        margin-top: 2px;
+    }
 
     /* Light data panels (folium map + plotly charts) as crisp cards, so the
        bright surfaces read as intentional content, not stray white holes. */
@@ -853,27 +1143,99 @@ st.markdown(
         padding: 6px 8px;
         border: 1px solid rgba(255, 255, 255, 0.10);
     }
+
+    /* AOI picker: sized like a search bar (to its content) rather than
+       stretched across the full column. min-width covers the longer of the
+       two AOI labels so it doesn't visibly resize when switching. */
+    div[data-testid="stSelectbox"] {
+        width: fit-content !important;
+        min-width: 260px;
+    }
+    div[data-testid="stSelectbox"] > div,
+    div[data-testid="stSelectbox"] [data-baseweb="select"] {
+        width: fit-content !important;
+        min-width: 260px;
+    }
+
+    /* Fact-line titles with a help tooltip (Catchment area, Time series):
+       the text container defaults to full row width, which pushes the "?"
+       icon all the way to the row's right edge instead of right after the
+       text - shrink it to content so the icon sits flush against the text,
+       like the Dataset radio's label + tooltip. */
+    div[data-testid="stMarkdown"]:has([data-testid="stTooltipIcon"])
+        [data-testid="stMarkdownContainer"] {
+        width: fit-content;
+    }
+
+    /* Subtitle: pulled up closer to the title. A margin on the markdown div
+       itself doesn't reduce this gap (it's absorbed inside the block's own
+       flex item), so the negative margin sits on the keyed wrapper instead,
+       which is the actual flex item spaced against the title above it. */
+    div.st-key-subtitle_wrap {
+        margin-top: -13px;
+    }
+
+    /* KPI panel: nudged down so "Latest satellite data" lines up with the
+       title's baseline. Both boxes start at the same row top, but the
+       title's larger font/line-height pushes its own glyphs further down
+       within its box than this smaller heading's glyphs sit within its own -
+       this closes that gap so the two look level despite the size
+       difference. */
+    div.st-key-kpi_slot {
+        margin-top: 24px;
+    }
+
+    /* Info popover: pinned to the very bottom of the sidebar panel.
+       stSidebarUserContent only grows to fit its own content (not the full
+       sidebar height), so margin-top:auto has nothing to push against there
+       - anchor to stSidebarContent (which is the full-height panel) instead
+       via absolute positioning. */
+    div[data-testid="stSidebarContent"] {
+        position: relative;
+    }
+    div.st-key-info_popover_wrap {
+        position: absolute;
+        left: 10px;
+        bottom: 20px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.title("From Snow to Reservoir")
-st.caption("Satellite monitoring of the snow, glacier and reservoir water chain in the Georgian Greater Caucasus")
+# Title/subtitle on the left, a KPI slot on the right at the same top edge.
+# page_overview() reopens both columns later - the map goes under the title
+# in title_col, the cards go into kpi_slot - so map and cards end up level
+# with each other, beside the title, on the Overview page. Empty on the
+# other two pages, since only page_overview() writes into them.
+title_col, kpi_slot_col = st.columns([3, 2])
+with title_col:
+    st.title("From Snow to Reservoir")
+    # Custom-spaced in place of st.caption: a plain caption sits right under the
+    # title with barely any gap, so the title/subtitle pair reads as one block
+    # that runs straight into "Area of interest" below it. Wrapped in a keyed
+    # container (div.st-key-subtitle_wrap below) rather than relying on the
+    # inner div's own margin-top, since that margin is absorbed inside this
+    # block's flex item and doesn't reduce the gap to the title above it.
+    with st.container(key="subtitle_wrap"):
+        st.markdown(
+            '<div style="margin-bottom:26px;color:rgba(250,250,250,0.6);font-size:14px;">'
+            "Satellite monitoring of the snow, glacier and reservoir water chain in "
+            "the Georgian Greater Caucasus</div>",
+            unsafe_allow_html=True,
+        )
+with kpi_slot_col:
+    kpi_slot = st.container(key="kpi_slot")
 
-# ── Sidebar ──────────────────────────────────
+# ── Global controls (sidebar, shared by every page) ──────────
+# AOI and time range govern both pages' data, so they live in the sidebar
+# rather than on either page individually - pick once, both pages reflect it.
 with st.sidebar:
-    st.header("Settings")
     aoi_label = st.selectbox("Area of interest", list(AOIS.keys()))
-    aoi = AOIS[aoi_label]
+aoi = AOIS[aoi_label]
 
-    st.divider()
-    st.caption(
-        "© Sebastian Macherey · "
-        "[GitHub](https://github.com/sebastianmry/from-snow-to-reservoir)"
-    )
+catchment = load_catchment(aoi["key"])
 
-# ── Load data ────────────────────────────────
 # Snow / glacier come from HLS (optical), water comes from S1 (radar).
 with st.spinner("Loading time series..."):
     df_hls_full, is_mock_hls = load_timeseries(aoi["key"])
@@ -885,17 +1247,35 @@ if is_mock_hls or is_mock_s1:
         "demo data. Run extract_timeseries.py for real values.",
     )
 
-# Date range slider (spanning both series)
 min_date = min(df_hls_full["date"].min(), df_s1_full["date"].min()).date()
 max_date = max(df_hls_full["date"].max(), df_s1_full["date"].max()).date()
 
-date_range = st.sidebar.slider(
-    "Time range",
-    min_value=min_date,
-    max_value=max_date,
-    value=(min_date, max_date),
-    format="DD.MM.YYYY",
-)
+with st.sidebar:
+    date_range = st.slider(
+        "Time range",
+        min_value=min_date,
+        max_value=max_date,
+        value=(min_date, max_date),
+        format="DD.MM.YYYY",
+    )
+    # Pinned to the very bottom of the sidebar panel (see the keyed wrapper's
+    # absolute positioning below) - an icon-only "About" button rather than
+    # competing with the AOI/time-range picker for attention at the top.
+    info_wrap = st.container(key="info_popover_wrap")
+    with info_wrap, st.popover("", icon=":material/info:"):
+        st.caption(
+            "This project is open science. You can find my full code, "
+            "documentation & workflow on my [GitHub]"
+            "(https://github.com/sebastianmry/from-snow-to-reservoir)."
+        )
+        st.caption(
+            "Data and licences: OPERA DSWx-S1 and DSWx-HLS (NASA Earthdata); glacier "
+            "outlines RGI 7.0 (CC-BY 4.0); catchment, rivers and reservoir seed from "
+            "HydroSHEDS, i.e. HydroBASINS, HydroRIVERS and HydroLAKES (free with "
+            "attribution); basemap © OpenStreetMap contributors and © CARTO, terrain "
+            "layer © Stadia Maps, © Stamen Design, © OpenMapTiles, satellite layer "
+            "© Esri, Maxar, Earthstar Geographics."
+        )
 
 def _slice(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[(frame["date"] >= pd.Timestamp(date_range[0])) &
@@ -904,217 +1284,317 @@ def _slice(frame: pd.DataFrame) -> pd.DataFrame:
 hls_df = _slice(df_hls_full)   # HLS: snow / glacier
 df_s1  = _slice(df_s1_full)    # S1: water
 
-# ── KPI tiles ────────────────────────────────
-# Water from S1; snow / glacier from HLS
-latest_s1   = df_s1.iloc[-1] if not df_s1.empty else None
-max_water   = df_s1["water_km2"].max() if not df_s1.empty else None
+# Scene counts, reused by both the Overview KPI cards and the Scene Browser.
+_s1_index  = load_overlay_index(aoi["key"], "s1")
+_hls_index = load_overlay_index(aoi["key"], "hls")
 
-latest_hls  = hls_df.iloc[-1] if not hls_df.empty else None
-# Use the coverage-corrected seasonal snow when present (comparable across dates).
-seasonal_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in hls_df.columns
-                else "seasonal_snow_km2")
-max_snow    = ((hls_df[seasonal_col] + hls_df["snow_on_glacier_km2"]).max()
-               if not hls_df.empty else None)
-latest_snow = (
-    latest_hls[seasonal_col] + latest_hls["snow_on_glacier_km2"]
-    if latest_hls is not None else None
-)
+# Map source layers, reused by both the Overview map and the Scene Browser map.
+with st.spinner("Loading map data..."):
+    rivers    = load_rivers(aoi["key"])
+    glaciers  = load_glaciers(tuple(aoi["clip_box"]))
+    reservoir = load_reservoir(aoi["key"])
 
-col1, col2, col3, col4 = st.columns(4)
 
-with col1:
-    reservoir_series = (df_s1["reservoir_area_km2"] if "reservoir_area_km2" in df_s1.columns
+def _kpi_card_html(label: str, value: str, date_str: str, range_text: str, mean_text: str) -> str:
+    """HTML for one KPI card matching st.metric's look, with the reading's
+    date set right above the value, and the range/mean pill below it. Fixed
+    width (not max-width) and centred so it stays a compact, punchy number
+    card regardless of how wide its containing column is - a flex child with
+    only max-width and auto margins shrinks to its content's width instead of
+    stretching up to that cap, since auto margins override align-items:
+    stretch, so this needs an explicit width now that the Key metrics panel
+    is one flex column (see page_overview()). Returns a string (rather than
+    calling st.markdown itself) so the panel can compose the heading, scene
+    count and both cards into a single HTML block."""
+    return (
+        '<div style="background:rgba(255,255,255,0.04);border:1px solid '
+        'rgba(255,255,255,0.10);border-radius:14px;padding:14px 12px;'
+        'text-align:center;min-height:124px;width:min(260px, 100%);margin:0 auto;">'
+        f'<div style="font-size:14px;opacity:0.75;">{label}</div>'
+        f'<div style="font-size:14px;color:rgba(250,250,250,0.6);'
+        f'margin-top:2px;">{date_str}</div>'
+        f'<div style="font-size:26px;font-weight:700;margin-top:2px;">{value}</div>'
+        '<div style="font-size:14px;color:rgba(250,250,250,0.6);'
+        'background:rgba(128,132,149,0.2);border-radius:0;padding:6px 10px;'
+        f'margin-top:6px;line-height:1.5;">↔ {range_text}<br>Ø {mean_text}</div>'
+        '</div>'
+    )
+
+
+def _kpi_card_no_data_html(label: str) -> str:
+    """Same card footprint as _kpi_card_html, for the rare case a reading
+    genuinely has no data - keeps the panel's layout stable either way."""
+    return (
+        '<div style="background:rgba(255,255,255,0.04);border:1px solid '
+        'rgba(255,255,255,0.10);border-radius:14px;padding:14px 12px;'
+        'text-align:center;min-height:124px;width:min(260px, 100%);margin:0 auto;'
+        'display:flex;flex-direction:column;justify-content:center;">'
+        f'<div style="font-size:14px;opacity:0.75;">{label}</div>'
+        '<div style="font-size:20px;margin-top:6px;opacity:0.6;">No data</div>'
+        '</div>'
+    )
+
+
+# AOI map's st_folium height.
+MAP_HEIGHT = 420
+
+
+def page_overview():
+    """AOI map beside the KPI cards, both level with the title. Neither
+    renders into this function's own page flow directly - the map goes into
+    title_col (under the subtitle) and the cards into kpi_slot, both opened
+    in the header block above, so this page has no content of its own left
+    at the top level; only the time-series charts live on other pages."""
+    dam_name = RESERVOIR_NAME.get(aoi["key"], aoi["dam_label"])
+    if catchment is not None and not catchment.empty:
+        catchment_area_km2 = catchment.to_crs("EPSG:32638").area.sum() / 1e6
+        catchment_text = (
+            f"Catchment area above the {dam_name} dam: "
+            f'<span style="font-weight:700;">{catchment_area_km2:.0f} km²</span>'
+        )
+    else:
+        catchment_text = f"Catchment area above the {dam_name} dam not found"
+
+    latest_s1 = df_s1.iloc[-1] if not df_s1.empty else None
+    water_series = df_s1["water_km2"] if not df_s1.empty else pd.Series(dtype=float)
+    min_water, max_water, mean_water = (
+        water_series.min(), water_series.max(), water_series.mean())
+
+    # Use the coverage-corrected seasonal snow when present (comparable across dates).
+    seasonal_col = ("seasonal_snow_km2_est" if "seasonal_snow_km2_est" in hls_df.columns
+                    else "seasonal_snow_km2")
+    snow_series = (hls_df[seasonal_col] + hls_df["snow_on_glacier_km2"]
+                  if not hls_df.empty else pd.Series(dtype=float))
+    min_snow, max_snow, mean_snow = (snow_series.min(), snow_series.max(), snow_series.mean())
+    latest_snow = snow_series.iloc[-1] if not snow_series.empty else None
+
+    # Bare glacier ice is its own KPI card (not folded into "Total snow"
+    # above), since it's a distinct signal - exposed ice, no snow cover.
+    ice_series = hls_df["bare_ice_km2"] if not hls_df.empty else pd.Series(dtype=float)
+    min_ice, max_ice, mean_ice = (ice_series.min(), ice_series.max(), ice_series.mean())
+    latest_ice = ice_series.iloc[-1] if not ice_series.empty else None
+
+    # Reuses title_col (opened in the header block above) so the map sits
+    # under the subtitle, level with the KPI cards in kpi_slot beside it.
+    with title_col:
+        st.markdown(
+            f'<div style="color:#fafafa;font-size:14px;">{catchment_text}</div>',
+            unsafe_allow_html=True,
+            help=(
+                "Drainage basin upstream of the dam, delineated from HydroSHEDS "
+                "HydroBASINS sub-basin polygons."
+            ),
+        )
+        # Explicit spacer element: a margin on the markdown div above does not
+        # reliably translate into extra space in Streamlit's block layout here.
+        st.markdown('<div style="height:32px;"></div>', unsafe_allow_html=True)
+
+        aoi_map = build_map(aoi, rivers, glaciers, reservoir, catchment)
+        # returned_objects=[] stops st_folium from sending map-interaction data
+        # back on every pan/zoom/scroll, which otherwise triggers a Streamlit
+        # rerun and the transient dimming overlay. The return value is unused
+        # here anyway.
+        st_folium(aoi_map, height=MAP_HEIGHT, use_container_width=True, returned_objects=[])
+        render_aoi_legend(
+            has_catchment=catchment is not None and not catchment.empty,
+            has_glaciers=glaciers is not None and not glaciers.empty,
+            has_rivers=bool(rivers),
+            has_reservoir=reservoir is not None and not reservoir.empty,
+        )
+
+    reservoir_series = (df_s1["reservoir_area_km2"]
+                        if "reservoir_area_km2" in df_s1.columns
                         else pd.Series(dtype=float))
     has_reservoir = reservoir_series.notna().any()
     if has_reservoir:
-        # Current = last date with a valid lake reading; max over valid dates.
-        # (False-drawdown dates are already NaN via the reservoir guard.)
-        max_reservoir    = reservoir_series.max()
-        latest_reservoir = reservoir_series.dropna().iloc[-1]
-        st.metric(
-            "Reservoir area (S1, current)",
-            f"{latest_reservoir:.2f} km²",
-            delta=f"Max: {max_reservoir:.2f} km²",
-            delta_color="off",
-            help="Reservoir footprint from DSWx-S1 radar (cloud independent). "
-                 "Current = most recent valid date in the selected range; max over "
-                 "the same range.",
+        # Current = last date with a valid lake reading; range/mean over
+        # valid dates. (False-drawdown dates are already NaN via the
+        # reservoir guard.)
+        min_reservoir, max_reservoir, mean_reservoir = (
+            reservoir_series.min(), reservoir_series.max(), reservoir_series.mean())
+        valid_reservoir = reservoir_series.dropna()
+        latest_reservoir = valid_reservoir.iloc[-1]
+        latest_reservoir_date = df_s1.loc[valid_reservoir.index[-1], "date"]
+        card1_html = _kpi_card_html(
+            "Reservoir area (S1)", f"{latest_reservoir:.2f} km²",
+            latest_reservoir_date.strftime("%d/%m/%Y"),
+            f"{min_reservoir:.2f}–{max_reservoir:.2f} km²", f"{mean_reservoir:.2f} km²",
         )
     elif latest_s1 is not None:
-        st.metric(
-            "Water area (S1, current)",
-            f"{latest_s1['water_km2']:.2f} km²",
-            delta=f"Max: {max_water:.2f} km²",
-            delta_color="off",
-            help="AOI-wide open water from DSWx-S1 radar (includes rivers). "
-                 "Current = most recent date in the selected range.",
+        card1_html = _kpi_card_html(
+            "Water area (S1)", f"{latest_s1['water_km2']:.2f} km²",
+            latest_s1["date"].strftime("%d/%m/%Y"),
+            f"{min_water:.2f}–{max_water:.2f} km²", f"{mean_water:.2f} km²",
         )
     else:
-        st.metric("Water area (S1, current)", "No data")
+        card1_html = _kpi_card_no_data_html("Water area (S1)")
 
-with col2:
     if latest_snow is not None:
-        st.metric(
-            "Total snow (HLS, current)",
-            f"{latest_snow:.0f} km²",
-            delta=f"Max: {max_snow:.0f} km²",
-            delta_color="off",
-            help="Seasonal snow plus snow lying on glaciers, from optical HLS. "
-                 "Coverage corrected where available, so partial scenes are not "
-                 "biased low.",
+        latest_snow_date = hls_df["date"].iloc[-1]
+        card2_html = _kpi_card_html(
+            "Total snow (HLS)", f"{latest_snow:.0f} km²",
+            latest_snow_date.strftime("%d/%m/%Y"),
+            f"{min_snow:.0f}–{max_snow:.0f} km²", f"{mean_snow:.0f} km²",
         )
     else:
-        st.metric("Total snow (HLS, current)", "No data")
+        card2_html = _kpi_card_no_data_html("Total snow (HLS)")
 
-with col3:
-    if latest_hls is not None:
-        st.metric(
-            "Bare glacier ice", f"{latest_hls['bare_ice_km2']:.1f} km²",
-            help="Exposed (snow free) glacier ice on the most recent HLS scene in "
-                 "the selected range.",
+    if latest_ice is not None:
+        latest_ice_date = hls_df["date"].iloc[-1]
+        card3_html = _kpi_card_html(
+            "Total ice (HLS)", f"{latest_ice:.1f} km²",
+            latest_ice_date.strftime("%d/%m/%Y"),
+            f"{min_ice:.1f}–{max_ice:.1f} km²", f"{mean_ice:.1f} km²",
         )
     else:
-        st.metric("Bare glacier ice", "No data")
+        card3_html = _kpi_card_no_data_html("Total ice (HLS)")
 
-with col4:
-    st.metric(
-        "Scenes in range",
-        f"{len(df_s1)} S1 (water)",
-        delta=f"{len(hls_df)} HLS (snow)",
-        delta_color="off",
-        help="Number of acquisitions in the selected time range, by sensor.",
+    # Reuses kpi_slot (opened beside the title in the header block above),
+    # so the cards sit level with the title.
+    with kpi_slot:
+        # The heading, scene count and three cards render as one HTML block
+        # (not five separate st.markdown calls) so flexbox can size and
+        # space them evenly.
+        st.markdown(
+            # gap:20px is the base spacing (used between the cards); the
+            # heading-to-scene-count and scene-count-to-first-card gaps are
+            # each pulled in by 4px (margin-top:-4px on the flex items
+            # themselves) to a tighter 16px.
+            '<div style="display:flex;flex-direction:column;gap:20px;">'
+            '<div style="text-align:center;font-size:14px;font-weight:700;'
+            f'color:#fafafa;">Latest satellite data</div>'
+            '<div style="text-align:center;font-size:14px;font-weight:400;'
+            f'margin-top:-4px;color:#fafafa;">'
+            f'{len(_s1_index["dates"]) if _s1_index else 0} S1 · '
+            f'{len(_hls_index["dates"]) if _hls_index else 0} HLS valid scenes</div>'
+            f'<div style="margin-top:-4px;">{card1_html}</div>'
+            f'{card2_html}'
+            f'{card3_html}'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def page_time_series():
+    """Water, snow and ice trends over the selected AOI and time range, on its
+    own page so the Overview stays a compact map-plus-KPI summary."""
+    # Same fact-line style/spacing as the catchment fact on Overview and
+    # "Scenes over time" on Scene Browser, so all three pages open the same way.
+    # Tooltip is UI mechanics only, like Scene Browser's - the S1/HLS product
+    # details live in the two tabs' own "?" tooltips right below.
+    st.markdown(
+        '<div style="color:#fafafa;font-size:14px;font-weight:700;">'
+        "Time series</div>",
+        unsafe_allow_html=True,
+        help="Pick a tab to view how water, snow, or ice area changed "
+             "over the selected time range.",
     )
+    st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
 
-st.divider()
-
-# ── Map + Charts ─────────────────────────────
-map_col, chart_col = st.columns([1, 1], gap="large")
-
-with map_col:
-    st.subheader("Area of interest")
-    with st.spinner("Loading map data..."):
-        rivers    = load_rivers(aoi["key"])
-        glaciers  = load_glaciers(tuple(aoi["clip_box"]))
-        reservoir = load_reservoir(aoi["key"])
-        catchment = load_catchment(aoi["key"])
-
-    captions = []
-    if catchment is not None:
-        captions.append("Catchment (HydroBASINS)")
-    if glaciers is not None:
-        # Count only glaciers inside the basin, matching the catchment-clipped map.
-        if catchment is not None and not catchment.empty:
-            n_glaciers = int(glaciers.geometry.intersects(catchment.geometry.union_all()).sum())
-        else:
-            n_glaciers = len(glaciers)
-        captions.append(f"{n_glaciers} RGI v7 glacier polygons")
-    else:
-        captions.append("RGI glacier data not found")
-    if reservoir is not None:
-        reservoir_area = reservoir.iloc[0].get("area_km2")
-        captions.append(f"Reservoir footprint (S1)"
-                        f"{f': {reservoir_area:.2f} km²' if reservoir_area is not None else ''}")
-    else:
-        captions.append("Reservoir footprint not found, run derive_reservoir.py")
-    st.caption(" · ".join(captions))
-
-    aoi_map = build_map(aoi, rivers, glaciers, reservoir, catchment)
-    # returned_objects=[] stops st_folium from sending map-interaction data back on
-    # every pan/zoom/scroll, which otherwise triggers a Streamlit rerun and the
-    # transient dimming overlay. The return value is unused here anyway.
-    st_folium(aoi_map, height=430, use_container_width=True, returned_objects=[])
-
-with chart_col:
-    st.subheader("Time series")
     tab1, tab2 = st.tabs(["Water area", "Snow & ice"])
 
+    # Chart titles as single fact lines above the chart (matching the
+    # "Scenes over time" style) instead of Plotly's built-in in-chart title.
+    # One line each - any extra number or methodology detail goes in the "?"
+    # tooltip instead of a second line, so the chart never sits under two
+    # stacked titles.
     with tab1:
+        st.markdown(
+            '<div style="color:#fafafa;font-size:14px;">'
+            "Water components</div>",
+            unsafe_allow_html=True,
+            help="OPERA DSWx-S1 surface water extent, radar-derived so it "
+                 "sees through cloud; ~12 day revisit per Sentinel-1 pass.",
+        )
+        st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
         st.plotly_chart(chart_water(df_s1), width="stretch")
 
     with tab2:
+        st.markdown(
+            '<div style="color:#fafafa;font-size:14px;">'
+            "Snow and ice components</div>",
+            unsafe_allow_html=True,
+            help="Stacked as seasonal snow, snow on glacier, and bare "
+                 "glacier ice. OPERA DSWx-HLS snow/ice classification, "
+                 "optical-derived (Landsat 8/9 + Sentinel-2); ~2-3 day "
+                 "revisit, though usable scenes are fewer in practice due "
+                 "to cloudy imagery.",
+        )
+        st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
         st.plotly_chart(chart_snow(hls_df), width="stretch")
 
-# ── Scene browser (pre-rendered raster overlays) ─────────
-st.divider()
-st.subheader("Scenes over time")
 
-sensor_label = st.radio(
-    "Dataset", list(OVERLAY_SENSORS.keys()), horizontal=True,
-    help="S1 (radar, cloud independent) shows water; HLS (optical) shows snow and ice.",
-)
-sensor = OVERLAY_SENSORS[sensor_label]
-overlay_index = load_overlay_index(aoi["key"], sensor)
-
-if overlay_index is None:
-    st.info(
-        "No scenes have been rendered for this area and sensor yet. "
-        "Run `python render_overlays.py` (it reads the GeoTIFFs from the tile "
-        "store and writes coloured PNGs into static_data/overlays/)."
-    )
-else:
-    dates = overlay_index["dates"]
-    chosen_date = st.select_slider(
-        "Date", options=dates, value=dates[-1],
-        format_func=lambda d: f"{d[6:8]}.{d[4:6]}.{d[0:4]}",
-    )
-    overlay_uri = load_overlay_uri(aoi["key"], sensor, chosen_date)
-    if overlay_uri is None:
-        st.warning("Scene not readable.")
-    else:
-        # Clip the glacier outlines to the catchment so they end exactly at the
-        # basin boundary - matching the catchment-masked raster and the
-        # catchment-relative statistics (glaciers outside don't feed this reservoir).
-        glaciers_clipped = None
-        if sensor == "hls" and glaciers is not None:
-            glaciers_clipped = (gpd.clip(glaciers, catchment)
-                                if catchment is not None and not catchment.empty
-                                else glaciers)
-        overlay_map = build_overlay_map(
-            aoi, overlay_uri, overlay_index["bounds"], catchment, reservoir,
-            glaciers=glaciers_clipped,
-            zoom_to_reservoir=(sensor == "s1"),
-        )
-        st_folium(overlay_map, height=430, use_container_width=True,
-                  key=f"overlay_{aoi['key']}_{sensor}", returned_objects=[])
-    render_overlay_legend(sensor)
-
-# ── Data tables (collapsible) ─────────────────
-with st.expander("Show raw data"):
-    st.caption("Water (DSWx-S1)")
-    st.dataframe(
-        df_s1.sort_values("date", ascending=False).reset_index(drop=True),
-        width="stretch", hide_index=True,
-    )
-    st.caption("Snow / glaciers (DSWx-HLS)")
-    # Drop the optical HLS water column: it massively over-detects water
-    # (terrain shadow / ice misclassified); the water signal comes from S1.
-    hls_view_df = hls_df.drop(columns=["water_area_km2"], errors="ignore")
-    st.dataframe(
-        hls_view_df.sort_values("date", ascending=False).reset_index(drop=True),
-        width="stretch", hide_index=True,
-    )
-
-# ── About ─────────────────────────────────────
-with st.expander("About this project"):
-    st.caption(
-        "This dashboard tracks the snow to glacier to reservoir water chain above "
-        "two Georgian hydropower dams (Enguri and Zhinvali) from open satellite "
-        "data. Reservoir and water area come from Sentinel-1 radar (DSWx-S1, "
-        "cloud-independent); seasonal snow and glacier cover come from optical HLS "
-        "(DSWx-HLS). Statistics are masked to each dam's upstream catchment "
-        "(HydroBASINS). Built for the university course Automated Geospatial Data "
-        "Processing."
-    )
+def page_scene_browser():
+    """Pick a sensor and a date, see the pre-rendered raster for that exact
+    scene, with the raw tables underneath for anyone who wants the numbers."""
+    # Matches the catchment-fact style on the Overview page (page_overview)
+    # rather than a heading, so it reads as a small fact line, not a section
+    # title. Tooltip is UI mechanics only - the Dataset radio right below
+    # carries its own per-sensor product explainer.
     st.markdown(
-        "Live app: [from-snow-to-reservoir.streamlit.app]"
-        "(https://from-snow-to-reservoir.streamlit.app/)  \n"
-        "Source and methodology: [GitHub]"
-        "(https://github.com/sebastianmry/from-snow-to-reservoir)"
+        '<div style="color:#fafafa;font-size:14px;font-weight:700;">'
+        "Scenes over time</div>",
+        unsafe_allow_html=True,
+        help="Pick a sensor and date to view the raster's classified "
+             "extent in that scene.",
     )
-    st.caption(
-        "Data and licences: OPERA DSWx-S1 and DSWx-HLS (NASA, open); glacier "
-        "outlines RGI 7.0 (CC-BY 4.0); catchment, rivers and reservoir seed from "
-        "HydroSHEDS, i.e. HydroBASINS, HydroRIVERS and HydroLAKES (free with "
-        "attribution); basemap © OpenStreetMap contributors (ODbL) and © CARTO. "
-        "Full attribution is in the GitHub README."
+    # Explicit spacer element: a margin on the markdown div above does not
+    # reliably translate into extra space in Streamlit's block layout here.
+    # Matches the title-to-content gap on Time series, since both titles
+    # carry the same tooltip icon.
+    st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
+
+    sensor_label = st.radio(
+        "Dataset", list(OVERLAY_SENSORS.keys()), horizontal=True,
+        help="Water (S1): " + _SENSOR_HELP["s1"] + " Snow & ice (HLS): " + _SENSOR_HELP["hls"],
     )
+    sensor = OVERLAY_SENSORS[sensor_label]
+    overlay_index = _s1_index if sensor == "s1" else _hls_index
+
+    if overlay_index is None:
+        st.info(
+            "No scenes have been rendered for this area and sensor yet. "
+            "Run `python render_overlays.py` (it reads the GeoTIFFs from the tile "
+            "store and writes coloured PNGs into static_data/overlays/)."
+        )
+    else:
+        dates = overlay_index["dates"]
+        # Explicit spacer element: a margin on the radio widget above does not
+        # reliably translate into extra space in Streamlit's block layout here.
+        st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
+        chosen_date = st.select_slider(
+            "Date", options=dates, value=dates[-1],
+            format_func=lambda d: f"{d[6:8]}.{d[4:6]}.{d[0:4]}",
+        )
+        overlay_uri = load_overlay_uri(aoi["key"], sensor, chosen_date)
+        if overlay_uri is None:
+            st.warning("Scene not readable.")
+        else:
+            overlay_map = build_overlay_map(
+                aoi, overlay_uri, overlay_index["bounds"], catchment, reservoir,
+                zoom_to_reservoir=(sensor == "s1"),
+            )
+            st_folium(overlay_map, height=430, use_container_width=True,
+                      key=f"overlay_{aoi['key']}_{sensor}", returned_objects=[])
+        render_overlay_legend(sensor)
+
+    with st.expander("Show raw data"):
+        st.caption("Water (DSWx-S1)")
+        st.dataframe(
+            df_s1.sort_values("date", ascending=False).reset_index(drop=True),
+            width="stretch", hide_index=True,
+        )
+        st.caption("Snow / glaciers (DSWx-HLS)")
+        hls_view_df = hls_df.drop(columns=["water_area_km2"], errors="ignore")
+        st.dataframe(
+            hls_view_df.sort_values("date", ascending=False).reset_index(drop=True),
+            width="stretch", hide_index=True,
+        )
+
+
+pg = st.navigation([
+    st.Page(page_overview, title="Overview", icon=":material/map:", default=True),
+    st.Page(page_time_series, title="Time series", icon=":material/show_chart:"),
+    st.Page(page_scene_browser, title="Scene Browser", icon=":material/layers:"),
+])
+pg.run()

@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - Download OPERA DSWx-HLS to the tile store
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Optical water + snow/ice product (Landsat-8/9 + Sentinel-2).
 Downloads B01_WTR only; cloud masking uses the WTR layer's own 253 flag,
 so the separate B09_CLOUD layer is not needed.

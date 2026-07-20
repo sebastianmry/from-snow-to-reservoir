@@ -1,8 +1,5 @@
 """
-FROM SNOW TO RESERVOIR - HydroBASINS Catchment Delineation
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
-Derives the drainage basin ABOVE each dam from HydroBASINS
+Derives the drainage basin above each dam from HydroBASINS
 (HydroSHEDS family, same source as HydroRIVERS). The dam is the pour-point: we
 locate the sub-basin containing it and walk the basin topology upstream
 (HYBAS_ID / NEXT_DOWN), exactly as download_rivers.py walks the river network,
@@ -13,7 +10,7 @@ The catchment polygon (static_data/catchments.geojson) drives two things:
      -> the satellite download is trimmed to the basin instead of a coarse box;
   2. the polygon masks the analysis statistics in extract_timeseries.py, so
      snow/glacier/water are counted only inside the reservoir's drainage basin
-     (e.g. the Kazbek glaciers drain north into the Terek, NOT the Zhinvali, and
+     (e.g. the Kazbek glaciers drain north into the Terek, not the Zhinvali, and
      are correctly excluded).
 
 HydroBASINS: Lehner & Grill 2013, WWF / McGill, derived from HydroSHEDS.

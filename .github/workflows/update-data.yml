@@ -6,10 +6,8 @@ name: Update satellite data
 # are not already cached), so a run with nothing new is cheap and commits nothing.
 on:
   schedule:
-    - cron: "17 3 * * 1"     # Mondays 03:17 UTC (off the on-the-hour slot: GitHub
-                              # documents that :00 schedules are the most likely to be
-                              # delayed or dropped under load)
-  workflow_dispatch:          # manual "Run workflow" button
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+  workflow_dispatch: # manual "Run workflow" button
 
 # Never let two runs overwrite each other's commit.
 concurrency:
@@ -17,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write             # needed to push the refreshed artefacts back
+  contents: write
 
 jobs:
   update:
@@ -83,7 +81,7 @@ jobs:
         run: python render_overlays.py
 
       # Safety guard: a row count can only grow (NaN dates are kept, never dropped).
-      # If a parquet has FEWER rows than the committed version, the store was
+      # If a parquet has fewer rows than the committed version, the store was
       # incomplete this run (a missing MGRS tile pushes valid dates below the
       # coverage threshold). Abort before commit so a partial run can never
       # overwrite the good series; the failed run surfaces the problem.

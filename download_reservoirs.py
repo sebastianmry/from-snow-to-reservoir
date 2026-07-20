@@ -1,10 +1,7 @@
 """
-FROM SNOW TO RESERVOIR - HydroLAKES Reservoir Polygons
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Downloads HydroLAKES v1.0 (global lake/reservoir polygons, HydroSHEDS family)
 and extracts the exact polygon of each study reservoir (Enguri, Zhinvali).
-These polygons are only a SEED: HydroLAKES (derived from a ~2000 water mask)
+These polygons are only a seed: HydroLAKES (derived from a ~2000 water mask)
 underestimates the reservoirs badly (Enguri 4.85 km2 vs. real ~13 km2 - it
 captures only the lower pool, not the long valley arms). derive_reservoir.py
 takes this seed and grows it to the true footprint from the actual S1 maximum

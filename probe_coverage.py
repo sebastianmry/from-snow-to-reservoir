@@ -1,9 +1,6 @@
 """
-FROM SNOW TO RESERVOIR - S1 orbit selector (two-stage, read-only)
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Picks the Sentinel-1 relative orbit (the s1_anchor in aoi_config.py) to anchor
-the time series to, BEFORE the full re-download. Run it after a new clip_box is
+the time series to, before the full re-download. Run it after a new clip_box is
 set (e.g. after a catchment AOI change). Two stages:
 
   Stage A - footprint screen (free, no pixel download)
@@ -18,7 +15,7 @@ set (e.g. after a catchment AOI change). Two stages:
     (valid_px_pct after the AOI clip and the catchment mask) can differ between
     ascending/descending orbits because SAR layover & shadow leave NoData holes
     in steep terrain. So for each candidate phase we download N sample dates'
-    B01_WTR tiles, mosaic + clip + mask them with the SAME code the real run
+    B01_WTR tiles, mosaic + clip + mask them with the same code the real run
     uses (extract_timeseries.mosaic_tiles / extract_s1_stats), and report the
     real valid_px_pct. The phase with the best (and most consistent) pixel
     coverage is the recommended s1_anchor - an objective choice, not just the
@@ -27,13 +24,13 @@ set (e.g. after a catchment AOI change). Two stages:
   HLS is reported in stage A only (optical; the series keeps all clear dates,
   there is no single-orbit anchor to choose).
 
-    python probe_coverage.py                 # stage A only (footprint), both AOIs
-    python probe_coverage.py --sample 3      # + stage B: 3 test dates per phase
+    python probe_coverage.py             # stage A only (footprint), both AOIs
+    python probe_coverage.py --sample 3  # + stage B: 3 test dates per phase
     python probe_coverage.py enguri --sample 4
     python probe_coverage.py zhinvali s1 --sample 3
 
 Workflow: run with --sample, paste the recommended s1_anchor per AOI into
-aoi_config.py, THEN run download_s1.py (which downloads only that one orbit).
+aoi_config.py, then run download_s1.py (which downloads only that one orbit).
 """
 
 import argparse
@@ -266,9 +263,9 @@ def probe_s1_sample(aoi: dict, by_date: dict, by_phase: dict,
 # ─────────────────────────────────────────────
 # SECOND-ORBIT CONSISTENCY CHECK
 # ─────────────────────────────────────────────
-# Cheap test of whether a SECOND ~99% orbit (different 12-day phase = different
+# Cheap test of whether a second ~99% orbit (different 12-day phase = different
 # acquisition days) could densify the S1 reservoir series from ~12 to ~6 days
-# WITHOUT introducing a look-geometry sawtooth. We sample a few dates of the
+# without introducing a look-geometry sawtooth. We sample a few dates of the
 # second orbit, compute reservoir_area_km2 (same code as the real run) and put
 # each next to the nearest date of the existing (anchor-orbit) series. If the
 # values interleave smoothly (small, unbiased diff) the orbits agree on the lake

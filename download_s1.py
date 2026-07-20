@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - Download OPERA DSWx-S1 to the tile store
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Radar-based water product (Sentinel-1). Cloud-independent, used as the
 basis for a continuous reservoir water-level time series.
 Downloads B01_WTR (water class).

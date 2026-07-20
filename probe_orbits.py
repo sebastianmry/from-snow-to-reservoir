@@ -1,6 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - S1 orbit metadata probe (read-only, no download)
-
 Re-queries the same DSWx-S1 granules as download_s1.py and inspects their
 metadata to recover, per date:
   - satellite (S1A / S1C, from the native granule name)

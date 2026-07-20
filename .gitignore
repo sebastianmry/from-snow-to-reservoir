@@ -5,6 +5,10 @@
 # NASA Earthdata
 .netrc
 
+# Streamlit secrets (maptiler_api_key etc.) - set the same keys under
+# Streamlit Cloud's app settings for the deployed site
+.streamlit/secrets.toml
+
 # Python
 __pycache__/
 *.pyc

@@ -1,26 +1,25 @@
 # Project Context: FROM SNOW TO RESERVOIR
 Satellite monitoring of the snow–glacier–reservoir water chain in the Georgian Greater Caucasus
 
-## 1. Goal & geography
+## 1. Study area
 Hydrological monitoring of two key catchments in the Georgian Greater Caucasus, linking
-snowmelt, glacier change and reservoir storage from open satellite data.
-
-The area of interest (AOI) for each site is the **catchment above the dam** (HydroBASINS
-lev12, built by `download_catchments.py`). All sites are defined once in `aoi_config.py`,
-the single source of truth that every script imports (clip box, dam pour point, S1 orbit
-anchor, display fields).
+snowmelt, glacier change and reservoir storage from open satellite data. The area of
+interest (AOI) for each site is the **catchment above the dam** (HydroBASINS lev12, built
+by `download_catchments.py`). All sites are defined once in `aoi_config.py`, the single
+source of truth that every script imports (clip box, dam pour point, S1 orbit anchor,
+display fields).
 
 ### AOI 1: Enguri (Western Georgia / Svaneti)
 - `clip_box` (catchment bbox + 0.02° buffer): (41.8467, 42.7294, 43.1658, 43.2783)
 - Catchment area: ~3,139 km² (HydroBASINS lev12, converged from lev09)
-- Dam / pour point: (42.032, 42.753); `s1_anchor` 20240830 (phase 7), 50 S1 scenes
+- Dam / pour point: (42.032, 42.753); `s1_anchor` 20240830 (phase 7), 51 S1 scenes (as of 2026-07-20, growing weekly)
 - Heavily glaciated Svaneti headwaters; the box reaches to ~43.17 E to include the eastern
   Ushguli source rivers.
 
 ### AOI 2: Zhinvali (Eastern Georgia / Kazbegi)
 - `clip_box` (catchment bbox + 0.02° buffer): (44.3133, 42.0008, 45.245, 42.6283)
 - Catchment area: ~2,089 km² (HydroBASINS lev12, converged from lev10)
-- Dam / pour point: (44.771, 42.133); `s1_anchor` 20240825, 52 S1 scenes
+- Dam / pour point: (44.771, 42.133); `s1_anchor` 20240825, 53 S1 scenes (as of 2026-07-20, growing weekly)
 - Aragvi basin up to ~42.61 N. The Kazbek/Gergeti glaciers drain north into the Terek and
   are correctly excluded.
 
@@ -58,7 +57,7 @@ EPSG:4326, merged into one mosaic, clipped to the `clip_box` and padded to the f
   whole catchment is fully imaged (`valid_px_pct >= S1_MIN_VALID_PCT = 90%`) **or** the
   reservoir itself is fully observed (`reservoir_valid_pct >= RESERVOIR_MIN_COVER = 95%`). The
   Enguri anchor was reselected to phase 7 (2026-07-03 re-probe), which fully images the
-  catchment on 49 of 50 cycles, so its basin-wide `water_km2` is now gap-free; the previous
+  catchment on 50 of 51 cycles, so its basin-wide `water_km2` is now gap-free; the previous
   phase-6 anchor missed the eastern Svaneti headwaters on most cycles (catchment coverage
   ~59%) and left `water_km2` NaN on those dates. The gate still runs as defense-in-depth: on
   any rare partial-catchment date it keeps the fully observed reservoir (`reservoir_area_km2`)
@@ -114,7 +113,7 @@ quieter than the AOI total.
   closely. Enguri's ~9.3 km² is the area regularly flooded during the observation window
   (Aug 2024 – present); the literature ~13 km² is the full-pool area, which was not reached in
   this period (Enguri stayed drawn down), so the difference is a real drawdown, not an error.
-- Reservoir ranges: Enguri ~6.8–7.6 km² (flat: Jvari is a deep gorge reservoir, large level
+- Reservoir ranges: Enguri ~6.5–7.9 km² (flat: Jvari is a deep gorge reservoir, large level
   change for small area change, so area is a weak storage proxy here); Zhinvali ~8.4–10.7 km²
   with a clear seasonal cycle (drawdown over winter/spring, refill from May).
 - Storage is monitored through area, not an absolute level: freely available DEMs
@@ -126,17 +125,27 @@ quieter than the AOI total.
 Runs once after `extract_timeseries.py`. For each sensor it reads the date list from the
 finished parquet (scenes match the charts exactly), loads the tiles, mosaics them, downsamples
 to at most 900 px, colours them and writes `static_data/overlays/{site}/{sensor}/{date}.png`
-(+ a bounds sidecar). Colours: water blue, seasonal snow cyan, snow-on-glacier mid violet,
-bare glacier ice dark violet; cloud (253) / NoData / outside-catchment transparent. Resume-safe;
-`--refresh` re-renders. Pre-rendering keeps the dashboard fast (no raster work at runtime).
+(+ a bounds sidecar). S1 colours: water blue. HLS colours: seasonal snow cyan, snow-on-glacier
+mid violet, bare glacier ice dark violet; water is not rendered on the HLS overlay, since the
+optical water class over-detects (terrain shadow, glacial-river sediment) and the S1 view
+already covers water. Cloud (253) / NoData / outside-catchment stay transparent throughout.
+Resume-safe; `--refresh` re-renders. Pre-rendering keeps the dashboard fast (no raster work at
+runtime).
 
 ### Stage 4: `app.py` (Streamlit dashboard)
-- Streamlit + Folium + Plotly. KPI tiles (current vs. historical), date slider, AOI switch.
-- Folium map: catchment outline, RGI glacier polygons, HydroRIVERS rivers, dam pin, derived
-  reservoir footprint with an on-map label.
-- Plotly charts: reservoir area as the main water line with AOI-wide `water_km2` as a faint
-  reference; snow/ice as a stacked area using `seasonal_snow_km2_est`; cloud gaps shown as gaps.
-- A scene browser (sensor radio + date slider) loads the pre-rendered PNG overlays.
+- Streamlit + Folium + Plotly, three pages via `st.navigation` (`page_overview`,
+  `page_time_series`, `page_scene_browser`). The sidebar is global and shared across all three:
+  the AOI picker, the time range slider, and an info popover pinned to the bottom.
+- **Overview page:** title and catchment-area fact line beside the static catchment map
+  (catchment outline, RGI glacier polygons, HydroRIVERS rivers, dam pin, derived reservoir
+  footprint with an on-map label) in one column, with three KPI cards (reservoir area, total
+  snow, total ice) in a column beside it.
+- **Time series page:** two tabs with Plotly charts. Reservoir area is the main water line with
+  AOI-wide `water_km2` as a faint reference; snow/ice is a stacked area using
+  `seasonal_snow_km2_est`; cloud gaps show as gaps, not interpolated.
+- **Scene Browser page:** a sensor radio (Water S1 / Snow & ice HLS) and a date slider load the
+  matching pre-rendered PNG overlay on a per-scene Folium map, with a colour-swatch legend and a
+  raw-data expander (both time series tables) underneath.
 - The app reads only local files at runtime (parquets, GeoJSONs, RGI shapefile, overlay PNGs),
   so no secrets are needed in the cloud.
 
@@ -146,7 +155,7 @@ bare glacier ice dark violet; cloud (253) / NoData / outside-catchment transpare
 - `download_glaciers.py` — RGI v7 Region 12 (Caucasus & Middle East) from NSIDC, clipped to
   each AOI.
 - `download_rivers.py` — HydroRIVERS v10 Europe, clipped to both AOIs, large rivers only
-  (`ORD_FLOW <= 6`) → `static_data/georgia_rivers.geojson`.
+  (`ORD_FLOW <= 8`) → `static_data/georgia_rivers.geojson`.
 - `download_reservoirs.py` — HydroLAKES seed for `derive_reservoir.py`.
 - `probe_coverage.py` — read-only S1 orbit selector. Stage A screens footprint coverage into
   candidate 12-day phases; stage B (`--sample N`, `--only-phase P`) downloads sample dates and
@@ -165,7 +174,7 @@ bare glacier ice dark violet; cloud (253) / NoData / outside-catchment transpare
   artefacts (parquets, GeoJSONs, RGI shapefile, overlay PNGs) are committed; the bulk raw
   geodata stays out and is re-fetched on demand. `requirements.txt` pins the lean app deps;
   `requirements-pipeline.txt` pins the full pipeline deps.
-- **Auto-update (`.github/workflows/update-data.yml`):** weekly (Mon 03:00 UTC) plus manual
+- **Auto-update (`.github/workflows/update-data.yml`):** weekly (Mon 03:17 UTC) plus manual
   dispatch — download → extract → render, then changed parquets and overlay PNGs are committed
   back and Streamlit re-deploys. Tiles live in `runner.temp` (never committed). A guard step
   refuses to commit a regressed (shorter) time series. Only secret: the Earthdata credentials.
@@ -181,5 +190,5 @@ bare glacier ice dark violet; cloud (253) / NoData / outside-catchment transpare
 - Tile store: local filesystem under `PIPELINE_LOCAL_DIR` (default `./opera_local`)
 - Conda environment: `georgia-sar`
 
-The dashboard is a deliberate one-pager: a coherent single story per AOI (map, time series and
-scene browser on one page).
+The dashboard is a three-page `st.navigation` app per AOI: Overview (map, headline KPIs),
+Time series (water and snow/ice charts) and Scene Browser (date-slider raster viewer).

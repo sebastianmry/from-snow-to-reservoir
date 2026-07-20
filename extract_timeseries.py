@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - Time Series Extraction
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Reads clipped GeoTIFFs from the tile store and computes per-date area statistics.
 Requires RGI v7 Region 12 shapefile in static_data/ for glacier stats.
 Run download_glaciers.py first to fetch the shapefile.
@@ -50,7 +47,7 @@ except ImportError:
 
 # AOI definition (clip_box + s1_anchor) and DATA_ROOT live in aoi_config.py.
 # s1_anchor = one date (YYYYMMDD) of the chosen Sentinel-1 relative orbit; the S1
-# section below keeps ONLY dates sharing this orbit's 12-day phase (orbit_phase).
+# section below keeps only dates sharing this orbit's 12-day phase (orbit_phase).
 from aoi_config import AOIS, AOI_1, AOI_2, DATA_ROOT, CATCHMENTS_GEOJSON  # noqa: F401
 
 NODATA          = 255
@@ -58,19 +55,19 @@ WATER_VALUES    = {1, 2, 3, 4, 5}
 SNOW_VALUE      = 252
 CLOUD_WTR_VALUE = 253  # WTR layer's own cloud/cloud-shadow flag (replaces B09)
 MAX_CLOUD_PCT  = 30.0
-# HLS (optical): skip scenes with < this % valid (non-NoData) CATCHMENT pixels.
+# HLS (optical): skip scenes with < this % valid (non-NoData) catchment pixels.
 # Set to 85 (not 95) for the catchment AOIs: the eastern Svaneti headwater tip of
 # the Enguri basin sits at the edge of many Sentinel-2/Landsat swaths, so ~12% is
 # NoData on many dates (all tiles present - acquisition geometry, not a missing
 # tile). 85 recovers the genuinely clear partial dates (Enguri 24 -> 47 usable
 # days) while still rejecting near-empty scenes. Going lower barely helps: most of
-# the remaining partial dates are ALSO cloud-covered (the true limiter here is
+# the remaining partial dates are also cloud-covered (the true limiter here is
 # cloud, ~70-75% of dates), so they would just move to the cloud-skip bucket. The
 # residual coverage bias on the recovered days is removed by the *_est columns
 # (snow normalized to the observed area, scaled to the full basin).
 MIN_VALID_PCT  = 85.0
-# S1 (SAR): we anchor to one relative orbit. A date enters the series if EITHER
-# the whole catchment is fully imaged (>= S1_MIN_VALID_PCT) OR the reservoir itself
+# S1 (SAR): we anchor to one relative orbit. A date enters the series if either
+# the whole catchment is fully imaged (>= S1_MIN_VALID_PCT) or the reservoir itself
 # is fully observed (>= RESERVOIR_MIN_COVER). The catchment-full path keeps the
 # AOI-wide water_km2; the reservoir-only path recovers the anchor-orbit cycles
 # whose SAR swath misses the eastern Svaneti headwaters but still fully image the
@@ -98,7 +95,7 @@ MIN_TILES  = 2
 RGI_SHP_GLOB = "RGI2000-v7.0-G-12_caucasus*middle_east.shp"
 
 # Reservoir footprint (S1-derived envelope from derive_reservoir.py). Used to
-# measure water area INSIDE the reservoir specifically, separate from the
+# measure water area inside the reservoir specifically, separate from the
 # AOI-wide water (which also includes rivers).
 RESERVOIR_GEOJSON = STATIC_DIR / "reservoirs.geojson"
 
@@ -222,13 +219,13 @@ def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None,
     SAR is cloud-independent, so no cloud filter applies. Always returns the
     stats incl. valid_px_pct; the caller decides whether coverage is sufficient.
 
-    If a catchment polygon is given, water is counted ONLY inside the drainage
-    basin and valid_px_pct is the fraction of CATCHMENT pixels that have data
+    If a catchment polygon is given, water is counted only inside the drainage
+    basin and valid_px_pct is the fraction of catchment pixels that have data
     (not the bbox), so the coverage filter stays meaningful even though the
     clip_box is larger than the basin.
 
     If a reservoir polygon is given, also report reservoir_area_km2 = water
-    pixels INSIDE the reservoir footprint - separate from the AOI-wide water
+    pixels inside the reservoir footprint - separate from the AOI-wide water
     (which also includes rivers). This is the level-relevant signal and is
     far less noisy than the AOI total (no valley-floor speckle, orbit-robust)."""
     wtr = wtr_da.values[0]
@@ -255,7 +252,7 @@ def extract_s1_stats(wtr_da, reservoir: gpd.GeoDataFrame | None = None,
         stats["reservoir_valid_pct"] = round(reservoir_cover, 2)
         if reservoir_cover < RESERVOIR_MIN_COVER:
             # Lake itself under-observed this date -> a low area would be a false
-            # drawdown. Report NaN for the reservoir AND for water_km2: the lake is
+            # drawdown. Report NaN for the reservoir and for water_km2: the lake is
             # the dominant AOI water body, so the AOI-wide water count is unreliable
             # on exactly these dates too (the missing area is water-dense, and water
             # cannot be area-normalized like snow since it is not evenly distributed).
@@ -291,12 +288,12 @@ def dedup_single_orbit(rows: list[dict]) -> list[dict]:
         return rows
     n_before = len(rows)
 
-    # 1. Drop genuinely partial scenes FIRST. A partial track (e.g. ~79% AOI)
+    # 1. Drop genuinely partial scenes first. A partial track (e.g. ~79% AOI)
     #    passes the loose extraction threshold but must not enter the series.
     #    Doing this before phase-grouping matters: with S1A+S1C, a partial and a
     #    full track can share the same 12-day phase, so filtering by phase median
     #    alone would still keep the partial scenes of the chosen phase.
-    #    EXCEPTION: a catchment-partial date whose RESERVOIR is fully observed is
+    #    Exception: a catchment-partial date whose reservoir is fully observed is
     #    kept - it still carries a valid reservoir_area_km2 (its water_km2 was
     #    already NaN'd at extract time). This recovers the anchor-orbit cycles whose
     #    SAR swath misses the eastern headwaters but fully images the western lake.
@@ -387,7 +384,7 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
     cloud_cover_percent; the caller decides whether coverage / cloud are acceptable.
 
     If a catchment polygon is given, all stats (water, snow, glacier) are counted
-    ONLY inside the drainage basin, and valid_px_pct / cloud_cover_percent are
+    only inside the drainage basin, and valid_px_pct / cloud_cover_percent are
     catchment-relative - so the Kazbek glaciers (outside the Zhinvali basin) and
     the empty corners of the larger clip_box do not enter the numbers.
     """
@@ -408,7 +405,6 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
     cloud_pct = float(np.sum(cloud & valid)) / max(n_valid, 1) * 100
 
     usable      = valid & ~cloud
-    water_mask  = np.isin(wtr, list(WATER_VALUES)) & usable
     snow_mask   = (wtr == SNOW_VALUE) & usable
 
     glacier_mask = rasterize_glaciers(glaciers, raster_crs, transform, shape)
@@ -419,10 +415,10 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
     bare_ice_km2      = max(0.0, glacier_total_km2 - float(np.sum(snow_on_glacier) * pixel_km2))
 
     # Coverage/cloud-corrected seasonal snow. seasonal_snow_km2 is the raw count
-    # and is biased LOW whenever part of the basin is NoData (swath edge) or cloud,
+    # and is biased low whenever part of the basin is NoData (swath edge) or cloud,
     # because that area is implicitly counted as snow-free. seasonal_snow_frac is
-    # the snow share of the OBSERVED (valid, cloud-free) non-glacier basin, and
-    # seasonal_snow_km2_est scales that share back to the FULL non-glacier basin -
+    # the snow share of the observed (valid, cloud-free) non-glacier basin, and
+    # seasonal_snow_km2_est scales that share back to the full non-glacier basin -
     # i.e. it fills the unobserved part with the observed snow rate. This makes the
     # snow series comparable across dates with different coverage. (Assumes the
     # unobserved area has a similar snow rate; the MIN_VALID_PCT / MAX_CLOUD_PCT
@@ -435,7 +431,6 @@ def extract_hls_stats(wtr_da, glaciers: gpd.GeoDataFrame | None,
     seasonal_snow_km2_est = seasonal_snow_frac * float(n_full_land * pixel_km2)
 
     return {
-        "water_area_km2":          float(np.sum(water_mask) * pixel_km2),
         "seasonal_snow_km2":       float(np.sum(snow_seasonal) * pixel_km2),
         "seasonal_snow_frac":      round(seasonal_snow_frac, 4),
         "seasonal_snow_km2_est":   round(seasonal_snow_km2_est, 2),
@@ -474,7 +469,7 @@ def _needs_recompute(entry: dict, sensor: str) -> bool:
     """For --recompute: does this cached date need a fresh store read+compute, or
     can we trust its cached skip decision? We only re-read dates that produce (or
     would now produce) an output row - 'ok' dates and dates that newly pass the
-    CURRENT thresholds. Cloud skips and genuine below-threshold partials are kept
+    current thresholds. Cloud skips and genuine below-threshold partials are kept
     as-is (no expensive store read), since they never contribute a row."""
     if entry.get("status") == "ok":
         return True
@@ -484,8 +479,8 @@ def _needs_recompute(entry: dict, sensor: str) -> bool:
         if entry.get("valid_px_pct", 0) >= thr:
             return True
         # S1: a catchment-partial date that nonetheless fully observed the reservoir
-        # now yields a reservoir-only row (see the gate in run_pipeline), so it must
-        # be re-read too rather than trusted as a permanent skip.
+        # yields a reservoir-only row (see the gate in run_pipeline), so it must be
+        # re-read too rather than trusted as a permanent skip.
         return (sensor == "s1"
                 and entry.get("reservoir_valid_pct", 0) >= RESERVOIR_MIN_COVER)
     if reason == "cloud":
@@ -606,7 +601,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
         wtr_tiles = [tile for tile in store.list_tifs(site_folder)
                      if "B01_WTR" in tile["title"]]
 
-        # Group ALL tiles per date (multiple MGRS tiles cover the AOI)
+        # Group all tiles per date (multiple MGRS tiles cover the AOI)
         wtr_by_date: dict[str, list] = {}
         for tile in wtr_tiles:
             parsed = parse_filename(tile["title"])
@@ -658,8 +653,8 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                     save_cache(f"{site}_s1", cache)
                     continue
                 stats = extract_s1_stats(wtr_mosaic, reservoir, catchment)
-                # Reservoir-decoupled gate: keep a date if EITHER the whole
-                # catchment is fully imaged OR the reservoir itself is fully
+                # Reservoir-decoupled gate: keep a date if either the whole
+                # catchment is fully imaged or the reservoir itself is fully
                 # observed. On the anchor orbit the eastern Svaneti headwaters fall
                 # outside the SAR swath on many cycles (catchment cov ~59%) while the
                 # western reservoir is still 100% seen - those dates carry a valid
@@ -723,9 +718,9 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
 
         hls_tiles = store.list_tifs(site_folder)
 
-        # Group ALL WTR tiles per date (multiple MGRS tiles cover the AOI).
-        # Cloud masking comes from the WTR layer itself (value 253), so the
-        # B09_CLOUD layer is no longer needed.
+        # Group all WTR tiles per date (multiple MGRS tiles cover the AOI).
+        # Cloud masking comes from the WTR layer itself (value 253), so only
+        # WTR tiles need to be grouped here.
         wtr_by_date: dict[str, list] = {}
         for tile in hls_tiles:
             parsed = parse_filename(tile["title"])
@@ -770,8 +765,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
                     cache[date_str] = {"status": "skip", "reason": "cloud", **stats}
                 else:
                     cache[date_str] = {"status": "ok", **stats}
-                    print(f"water={stats['water_area_km2']:.2f}  "
-                          f"snow_seas={stats['seasonal_snow_km2']:.1f}  "
+                    print(f"snow_seas={stats['seasonal_snow_km2']:.1f}  "
                           f"snow_glac={stats['snow_on_glacier_km2']:.1f}  "
                           f"bare_ice={stats['bare_ice_km2']:.1f}  "
                           f"cloud={stats['cloud_cover_percent']:.0f}%")
@@ -783,7 +777,7 @@ def main(skip_s1: bool = False, skip_hls: bool = False, refresh: bool = False,
         if rows:
             save_outputs(
                 rows,
-                ["date", "water_area_km2", "seasonal_snow_km2", "seasonal_snow_frac",
+                ["date", "seasonal_snow_km2", "seasonal_snow_frac",
                  "seasonal_snow_km2_est", "snow_on_glacier_km2", "bare_ice_km2",
                  "glacier_total_km2", "obs_land_pct", "cloud_cover_percent", "valid_px_pct"],
                 f"{site}_timeseries",

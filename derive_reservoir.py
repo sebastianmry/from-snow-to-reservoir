@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - Reservoir Footprint from S1 Water Extent
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 HydroLAKES underestimates the study reservoirs (Enguri 4.85 km2 vs. real
 ~13 km2 - it captures only the lower pool, not the long valley arms). This
 script derives the true reservoir footprint from the data we already have:
@@ -38,7 +35,7 @@ from rasterio.enums import Resampling
 from extract_timeseries import (
     parse_filename, mosaic_tiles,
     NODATA, WATER_VALUES, MIN_TILES, S1_FULL_COVER_PCT,
-    STATIC_DIR, DATA_ROOT, AOI_1, AOI_2,
+    STATIC_DIR, DATA_ROOT, AOI_1, AOI_2, AOIS,
 )
 # Local tile store (filesystem under PIPELINE_LOCAL_DIR).
 from storage import get_store, ROOT
@@ -46,12 +43,6 @@ from storage import get_store, ROOT
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-
-# Dam points (lon, lat) - anchor + fallback if the seed polygon misses water.
-DAMS = {
-    "enguri":   (42.032, 42.753),
-    "zhinvali": (44.771, 42.133),
-}
 
 # Occurrence-based water masking (cf. JRC Global Surface Water, Pekel et al. 2016):
 # a pixel belongs to the reservoir if it was water in >= FREQ_THRESH of valid obs.
@@ -161,7 +152,7 @@ def seed_mask_on_grid(reference, clip_box, site):
                                  dtype=np.uint8).astype(bool)
 
     # Always include the dam pixel as a fallback anchor.
-    dam_lon, dam_lat = DAMS[site]
+    dam_lon, dam_lat = AOIS[site]["dam"]
     col_float, row_float = ~transform * (dam_lon, dam_lat)
     row_idx, col_idx = int(row_float), int(col_float)
     if 0 <= row_idx < shape[0] and 0 <= col_idx < shape[1]:

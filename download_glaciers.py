@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - RGI v7 Glacier Data Download
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Downloads the Randolph Glacier Inventory v7 Region 12 (Caucasus and Middle East)
 shapefile from NSIDC via authenticated NASA Earthdata HTTPS session.
 

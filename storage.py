@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - Tile storage
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 The pipeline (download -> extract -> render) keeps the clipped OPERA GeoTIFFs in a
 folder tree on disk: OPERA_DSWx / {hls,s1} / {site} / *.tif. This module hides the
 mechanics of that tree behind one small interface so the scripts do not care about

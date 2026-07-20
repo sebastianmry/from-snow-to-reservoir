@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - HydroRIVERS Download & Clip
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Downloads HydroRIVERS v10 (Europe and Middle East) from HydroSHEDS,
 clips it to the two AOI bounding boxes, and saves a compact GeoJSON
 for the Streamlit dashboard.
@@ -38,7 +35,7 @@ RIVERS_SHP_GLOB = "HydroRIVERS_v10_eu.shp"
 OUTPUT_GEOJSON = STATIC_DIR / "georgia_rivers.geojson"
 
 # AOI bbox (min_lon, min_lat, max_lon, max_lat) + dam point (lon, lat) come from
-# aoi_config.py. The dam point defines the catchment outlet: only rivers UPSTREAM
+# aoi_config.py. The dam point defines the catchment outlet: only rivers upstream
 # of it (i.e. that feed the reservoir) are kept.
 from aoi_config import AOIS
 
@@ -121,7 +118,7 @@ def upstream_of_dam(rivers_gdf: gpd.GeoDataFrame, dam_lon: float, dam_lat: float
     dam_utm = gpd.GeoSeries([dam_point], crs="EPSG:4326").to_crs("EPSG:32638").iloc[0]
     outlet_id = rivers_gdf.loc[rivers_utm.geometry.distance(dam_utm).idxmin(), "HYRIV_ID"]
 
-    # Reverse adjacency: which segments flow INTO each segment
+    # Reverse adjacency: which segments flow into each segment
     flows_into = defaultdict(list)
     for segment_id, next_down_id in zip(rivers_gdf["HYRIV_ID"], rivers_gdf["NEXT_DOWN"]):
         flows_into[next_down_id].append(segment_id)

@@ -1,7 +1,4 @@
 """
-FROM SNOW TO RESERVOIR - Shared download logic
-Author: Sebastian Macherey | github.com/sebastianmry/from-snow-to-reservoir
-
 Common code used by download_hls.py and download_s1.py:
   1. earthaccess searches OPERA granules from NASA
   2. Footprint pre-filter: only dates whose tile footprints cover the AOI
@@ -174,7 +171,7 @@ def download_and_clip(session, url: str, clip_box: tuple) -> bytes | None:
     """Download a granule via an authenticated requests session, clip to the AOI
     bbox in-memory and return GeoTIFF bytes. Retries transient errors with
     exponential backoff. The HTTP_TIMEOUT read deadline prevents a stalled socket
-    from hanging a worker forever (the previous fsspec path had no read timeout)."""
+    from hanging a worker forever."""
     for attempt in range(MAX_RETRIES):
         try:
             response = session.get(url, timeout=HTTP_TIMEOUT)
@@ -264,8 +261,8 @@ def process_aoi(aoi: dict, collection: dict, store):
         print(f"  -> orbit filter (anchor {anchor}, 12-day phase 0): "
               f"{len(keep_dates)}/{before} dates kept (one relative orbit)")
 
-    # Authenticated requests session (supports a hard read timeout, unlike the
-    # fsspec session) - shared across the download threads.
+    # Authenticated requests session (supports a hard read timeout) - shared
+    # across the download threads.
     session = earthaccess.get_requests_https_session()
 
     urls_to_process = []
