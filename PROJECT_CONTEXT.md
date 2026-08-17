@@ -12,14 +12,14 @@ display fields).
 ### AOI 1: Enguri (Western Georgia / Svaneti)
 - `clip_box` (catchment bbox + 0.02° buffer): (41.8467, 42.7294, 43.1658, 43.2783)
 - Catchment area: ~3,139 km² (HydroBASINS lev12, converged from lev09)
-- Dam / pour point: (42.032, 42.753); `s1_anchor` 20240830 (phase 7), 51 S1 scenes (as of 2026-07-20, growing weekly)
+- Dam / pour point: (42.032, 42.753); `s1_anchor` 20240830 (phase 7), 54 S1 scenes (as of 2026-08-17, growing weekly)
 - Heavily glaciated Svaneti headwaters; the box reaches to ~43.17 E to include the eastern
   Ushguli source rivers.
 
 ### AOI 2: Zhinvali (Eastern Georgia / Kazbegi)
 - `clip_box` (catchment bbox + 0.02° buffer): (44.3133, 42.0008, 45.245, 42.6283)
 - Catchment area: ~2,089 km² (HydroBASINS lev12, converged from lev10)
-- Dam / pour point: (44.771, 42.133); `s1_anchor` 20240825, 53 S1 scenes (as of 2026-07-20, growing weekly)
+- Dam / pour point: (44.771, 42.133); `s1_anchor` 20240825, 56 S1 scenes (as of 2026-08-17, growing weekly)
 - Aragvi basin up to ~42.61 N. The Kazbek/Gergeti glaciers drain north into the Terek and
   are correctly excluded.
 
@@ -57,7 +57,7 @@ EPSG:4326, merged into one mosaic, clipped to the `clip_box` and padded to the f
   whole catchment is fully imaged (`valid_px_pct >= S1_MIN_VALID_PCT = 90%`) **or** the
   reservoir itself is fully observed (`reservoir_valid_pct >= RESERVOIR_MIN_COVER = 95%`). The
   Enguri anchor was reselected to phase 7 (2026-07-03 re-probe), which fully images the
-  catchment on 50 of 51 cycles, so its basin-wide `water_km2` is now gap-free; the previous
+  catchment on all 54 cycles, so its basin-wide `water_km2` is now gap-free; the previous
   phase-6 anchor missed the eastern Svaneti headwaters on most cycles (catchment coverage
   ~59%) and left `water_km2` NaN on those dates. The gate still runs as defense-in-depth: on
   any rare partial-catchment date it keeps the fully observed reservoir (`reservoir_area_km2`)
