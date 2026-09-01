@@ -34,7 +34,6 @@ aoi_config.py, then run download_s1.py (which downloads only that one orbit).
 """
 
 import argparse
-import sys
 import statistics
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor

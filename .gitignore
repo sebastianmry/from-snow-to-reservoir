@@ -5,7 +5,7 @@
 # NASA Earthdata
 .netrc
 
-# Streamlit secrets (maptiler_api_key etc.) - set the same keys under
+# Streamlit secrets (stadia_api_key, carto_api_key) - set the same keys under
 # Streamlit Cloud's app settings for the deployed site
 .streamlit/secrets.toml
 
@@ -48,6 +48,9 @@ static_data/*
 !static_data/RGI2000-v7.0-G-12_caucasus_middle_east.prj
 !static_data/RGI2000-v7.0-G-12_caucasus_middle_east.shp
 !static_data/RGI2000-v7.0-G-12_caucasus_middle_east.shx
+
+# Course submission, stays out of the public repo
+Projekt_Geodatenprozessierung_*.pdf
 
 # Jupyter
 .ipynb_checkpoints/

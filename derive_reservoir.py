@@ -25,7 +25,7 @@ import numpy as np
 import geopandas as gpd
 import pandas as pd
 from tqdm import tqdm
-from shapely.geometry import shape as shapely_shape, Point
+from shapely.geometry import shape as shapely_shape
 from shapely.ops import unary_union
 from scipy import ndimage
 from rasterio.features import shapes as rio_shapes, rasterize

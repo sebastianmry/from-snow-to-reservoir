@@ -146,8 +146,12 @@ runtime).
 - **Scene Browser page:** a sensor radio (Water S1 / Snow & ice HLS) and a date slider load the
   matching pre-rendered PNG overlay on a per-scene Folium map, with a colour-swatch legend and a
   raw-data expander (both time series tables) underneath.
-- The app reads only local files at runtime (parquets, GeoJSONs, RGI shapefile, overlay PNGs),
-  so no secrets are needed in the cloud.
+- The app reads only local files at runtime (parquets, GeoJSONs, RGI shapefile, overlay PNGs).
+  The only secrets it touches are basemap keys: `stadia_api_key` for the Terrain layer and an
+  optional `carto_api_key` for the dark layer. Both live in `.streamlit/secrets.toml` locally
+  and under the app settings on Streamlit Cloud. Without `carto_api_key` the dark layer falls
+  back to Stadia's Alidade Smooth Dark, because CARTO watermarks its keyless tiles with
+  "API KEY REQUIRED".
 
 ### Supporting scripts
 - `download_catchments.py` — HydroBASINS lev12, pour point at the dam, upstream BFS

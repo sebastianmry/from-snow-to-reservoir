@@ -303,7 +303,7 @@ The code in this repository is MIT-licensed (below). The third-party datasets bu
 - **Harmonized Landsat Sentinel-2 (HLS)** (NASA): open access.
 - **Randolph Glacier Inventory 7.0**, Region 12 Caucasus and Middle East (obtained via NSIDC): Creative Commons Attribution 4.0 (CC-BY 4.0). Released September 2023; the Greater Caucasus outlines derive from Landsat imagery of 1999 to 2002.
 - **HydroSHEDS** (HydroBASINS, HydroRIVERS, HydroLAKES): free for scientific, educational and commercial use with attribution (HydroLAKES under CC-BY 4.0).
-- **Basemap**: three switchable base layers, all free with attribution: Dark Matter (© OpenStreetMap contributors, ODbL, and © CARTO), Satellite (© Esri, Maxar, Earthstar Geographics) and Terrain (© Stadia Maps, © Stamen Design, © OpenMapTiles, © OpenStreetMap contributors). The attribution is shown on every map in the app.
+- **Basemap**: three switchable base layers, all free with attribution: Dark (© Stadia Maps, © OpenMapTiles, © OpenStreetMap contributors; with a `carto_api_key` in the app secrets it serves CartoDB Dark Matter instead, © OpenStreetMap contributors, ODbL, and © CARTO), Satellite (© Esri, Maxar, Earthstar Geographics) and Terrain (© Stadia Maps, © Stamen Design, © OpenMapTiles, © OpenStreetMap contributors). The attribution is shown on every map in the app and follows whichever dark layer is active.
 
 To reproduce the project, each dataset must be obtained from its own provider under these terms. This repository redistributes only the small derived layers the dashboard loads at runtime.
 

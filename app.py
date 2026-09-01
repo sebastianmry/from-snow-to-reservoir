@@ -9,6 +9,7 @@ import base64
 import json
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import folium
 import geopandas as gpd
@@ -378,31 +379,89 @@ def _shrink_attribution(fmap: folium.Map):
     ))
 
 
+_OSM_ATTR = ('© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+             'contributors')
+_STADIA_ATTR = ('© <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> '
+                '© <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> '
+                + _OSM_ATTR)
+
+
+def _stadia_tiles(style: str) -> str:
+    """Tile URL for a Stadia style, with the api_key appended when st.secrets
+    carries one (see .streamlit/secrets.toml, gitignored, and the same key
+    under Streamlit Cloud's app settings for the deployed site). Without a key
+    Stadia serves its keyless tier, which only resolves on localhost.
+
+    Built by hand rather than through xyzservices: a bare lookup there takes no
+    key parameter, and its raw template leaves a dangling literal {ext}."""
+    url = "https://tiles.stadiamaps.com/tiles/" + style + "/{z}/{x}/{y}{r}.png"
+    stadia_key = st.secrets.get("stadia_api_key")
+    if stadia_key:
+        url += f"?api_key={stadia_key}"
+    return url
+
+
+class DarkBasemap(NamedTuple):
+    """Layer name, tile URL, map attribution (HTML, shown in the map corner)
+    and plain-text provider credit (for the sidebar licence caption)."""
+    name: str
+    tiles: str
+    attr: str
+    credit: str
+
+
+def _dark_basemap() -> DarkBasemap:
+    """The flat dark base layer, picked by which basemap key st.secrets holds.
+
+    CARTO serves its basemaps keyless with an "API KEY REQUIRED" watermark
+    composited across every tile, and those tiles still come back as HTTP 200,
+    so a Leaflet tileerror fallback never fires. The key check therefore
+    happens here: with a carto_api_key in st.secrets the layer is CartoDB Dark
+    Matter, without one it is Stadia's Alidade Smooth Dark, which carries the
+    same flat dark grey look and reuses the Stadia key the Terrain layer
+    already needs."""
+    carto_key = st.secrets.get("carto_api_key")
+    if not carto_key:
+        return DarkBasemap(
+            name="Dark",
+            tiles=_stadia_tiles("alidade_smooth_dark"),
+            attr=_STADIA_ATTR,
+            credit="© Stadia Maps, © OpenMapTiles and © OpenStreetMap contributors",
+        )
+    # CARTO takes the key as "key", not "api_key": any other parameter name
+    # counts as keyless and comes back watermarked.
+    return DarkBasemap(
+        name="Dark Matter",
+        tiles=("https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+               f"?key={carto_key}"),
+        attr=_OSM_ATTR + " © CARTO",
+        credit="© OpenStreetMap contributors and © CARTO",
+    )
+
+
 def _add_basemap_layers(fmap: folium.Map, default: str = "plain"):
     """Three base layers, all always added, switchable via the
     folium.LayerControl() added once all overlays are on the map; `default`
     ("terrain" / "plain" / "satellite") picks which one starts checked.
 
-    "plain": CartoDB Dark Matter - flat dark grey, quiet like Positron but
-    without reading as stark white; the default for the scene-browser raster
-    overlays.
+    "plain": the flat dark base layer from _dark_basemap() - quiet like
+    Positron but without reading as stark white; the default for the
+    scene-browser raster overlays.
     "terrain": Stadia's Stamen Terrain - hillshaded relief, showing the
-    catchment's topography. Reads an optional stadia_api_key from st.secrets
-    (see .streamlit/secrets.toml, gitignored, and the same key under
-    Streamlit Cloud's app settings for the deployed site); without a key it
-    falls back to Stadia's keyless tier, which only resolves on localhost.
+    catchment's topography.
     "satellite": Esri World Imagery, a photographic alternative; the default
     for the AOI overview map.
 
     The catchment/glacier/river/reservoir layers drawn on top get a white
     casing (see build_map()/build_overlay_map()) so they stay readable
     against Terrain/Satellite without needing to dim the basemap itself."""
-    # Added Dark Matter, Satellite, Terrain - the LayerControl lists base
+    # Added dark base, Satellite, Terrain - the LayerControl lists base
     # layers in add order, and that's the order they should read in the picker.
+    dark = _dark_basemap()
     folium.TileLayer(
-        tiles="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-        attr='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © CARTO',
-        name="Dark Matter",
+        tiles=dark.tiles,
+        attr=dark.attr,
+        name=dark.name,
         show=(default == "plain"),
     ).add_to(fmap)
     folium.TileLayer(
@@ -413,19 +472,12 @@ def _add_basemap_layers(fmap: folium.Map, default: str = "plain"):
         name="Satellite",
         show=(default == "satellite"),
     ).add_to(fmap)
-    # Bare xyzservices lookup can't take a key param, so build the URL by hand
-    # from the real template it resolves ({variant}/{ext} filled in) rather
-    # than a hand-typed template, which leaves a dangling literal {ext}.
-    stadia_key = st.secrets.get("stadia_api_key")
-    stadia_url = "https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}{r}.png"
-    if stadia_key:
-        stadia_url += f"?api_key={stadia_key}"
     folium.TileLayer(
-        tiles=stadia_url,
+        tiles=_stadia_tiles("stamen_terrain"),
         attr=('© <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> '
               '© <a href="https://www.stamen.com/" target="_blank">Stamen Design</a> '
               '© <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> '
-              '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'),
+              + _OSM_ATTR),
         name="Terrain",
         show=(default == "terrain"),
     ).add_to(fmap)
@@ -1268,11 +1320,14 @@ with st.sidebar:
             "documentation & workflow on my [GitHub]"
             "(https://github.com/sebastianmry/from-snow-to-reservoir)."
         )
+        # The dark base layer's provider depends on which key st.secrets
+        # carries, so its credit follows _dark_basemap() instead of a fixed one.
+        dark_credit = _dark_basemap().credit
         st.caption(
             "Data and licences: OPERA DSWx-S1 and DSWx-HLS (NASA Earthdata); glacier "
             "outlines RGI 7.0 (CC-BY 4.0); catchment, rivers and reservoir seed from "
             "HydroSHEDS, i.e. HydroBASINS, HydroRIVERS and HydroLAKES (free with "
-            "attribution); basemap © OpenStreetMap contributors and © CARTO, terrain "
+            f"attribution); dark basemap {dark_credit}, terrain "
             "layer © Stadia Maps, © Stamen Design, © OpenMapTiles, satellite layer "
             "© Esri, Maxar, Earthstar Geographics."
         )
